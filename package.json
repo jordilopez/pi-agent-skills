@@ -16,9 +16,6 @@
     ],
     "extensions": [
       "./extensions"
-    ],
-    "agents": [
-      "./agents"
     ]
   },
   "files": [
