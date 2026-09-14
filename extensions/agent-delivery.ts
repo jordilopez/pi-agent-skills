@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
-import { mkdir, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
-import { dirname, join } from "node:path";
+import { lstat, mkdir, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
+import { dirname, isAbsolute, join, normalize, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
@@ -20,7 +20,6 @@ type OwnershipManifest = {
 
 const FORMAT_VERSION = 1;
 const PACKAGE_NAME = "agent-skills-pi";
-const PACKAGE_VERSION = "0.6.9-pi.0";
 const MANIFEST_DIR = ".pi/pi-agent-skills";
 const MANIFEST_FILE = "manifest.json";
 const AGENTS_DIR = ".pi/agents";
@@ -31,6 +30,8 @@ const AGENT_NAMES = [
   "test-engineer.md",
   "web-performance-auditor.md",
 ] as const;
+
+const HEX64_RE = /^[0-9a-f]{64}$/;
 
 const sha256 = async (filePath: string): Promise<string> => {
   const buffer = await readFile(filePath);
@@ -46,6 +47,115 @@ const writeJson = async (filePath: string, data: unknown): Promise<void> => {
   const content = `${JSON.stringify(data, null, 2)}\n`;
   await mkdir(dirname(filePath), { recursive: true });
   await writeFile(filePath, content, "utf-8");
+};
+
+const isPathContained = (candidate: string, root: string): boolean => {
+  const resolvedCandidate = resolve(candidate);
+  const resolvedRoot = resolve(root);
+  return resolvedCandidate === resolvedRoot || resolvedCandidate.startsWith(`${resolvedRoot}/`);
+};
+
+const hasTraversalSegments = (relativePath: string): boolean => {
+  const normalized = normalize(relativePath);
+  return normalized.startsWith("..") || normalized.startsWith("/");
+};
+
+const isHex64 = (value: unknown): value is string =>
+  typeof value === "string" && HEX64_RE.test(value);
+
+const isAgentName = (value: unknown): value is (typeof AGENT_NAMES)[number] =>
+  typeof value === "string" && (AGENT_NAMES as readonly string[]).includes(value);
+
+const assertFilePathSafe = (filePath: string, root: string, label: string): void => {
+  if (!isAbsolute(filePath)) {
+    throw new Error(`${label} must be an absolute path: ${filePath}`);
+  }
+
+  if (!isPathContained(filePath, root)) {
+    throw new Error(`${label} resolves outside the expected root: ${filePath}`);
+  }
+};
+
+const assertFileIsRegular = async (filePath: string, label: string): Promise<void> => {
+  try {
+    const fileStat = await lstat(filePath);
+
+    if (fileStat.isSymbolicLink()) {
+      throw new Error(`${label} must not be a symlink: ${filePath}`);
+    }
+
+    if (!fileStat.isFile()) {
+      throw new Error(`${label} must be a regular file: ${filePath}`);
+    }
+  } catch (error) {
+    if (
+      error instanceof Error &&
+      (error.message.includes("must not be a symlink") ||
+        error.message.includes("must be a regular file"))
+    ) {
+      throw error;
+    }
+
+    throw new Error(`${label} is inaccessible: ${filePath}`);
+  }
+};
+
+const validateOwnedAgentEntry = (
+  entry: unknown,
+  manifestPath: string,
+  packageRoot: string,
+  projectRoot: string,
+  index: number,
+): OwnedAgent => {
+  if (!entry || typeof entry !== "object") {
+    throw new Error(`Malformed agent entry at index ${index} in ${manifestPath}.`);
+  }
+
+  const record = entry as Record<string, unknown>;
+
+  if (typeof record.targetPath !== "string") {
+    throw new Error(`Missing target path at index ${index} in ${manifestPath}.`);
+  }
+
+  const agentName = record.targetPath.split("/").pop();
+
+  if (!isAgentName(agentName)) {
+    throw new Error(`Unexpected or missing agent name at index ${index} in ${manifestPath}.`);
+  }
+
+  if (!isHex64(record.sha256)) {
+    throw new Error(
+      `Invalid SHA-256 at index ${index} in ${manifestPath}. Expected exactly 64 lowercase hex characters.`,
+    );
+  }
+
+  if (typeof record.sourcePath !== "string") {
+    throw new Error(`Missing source path at index ${index} in ${manifestPath}.`);
+  }
+
+  const expectedSource = join(packageRoot, SOURCE_AGENTS_DIR, agentName);
+  const resolvedSource = resolve(record.sourcePath);
+
+  if (resolvedSource !== resolve(expectedSource)) {
+    throw new Error(
+      `Source path at index ${index} does not point to the expected package agent file: ${record.sourcePath}`,
+    );
+  }
+
+  const expectedTarget = join(projectRoot, AGENTS_DIR, agentName);
+  const resolvedTarget = resolve(record.targetPath);
+
+  if (resolvedTarget !== resolve(expectedTarget)) {
+    throw new Error(
+      `Target path at index ${index} does not point to the expected project agent file: ${record.targetPath}`,
+    );
+  }
+
+  return {
+    sourcePath: resolvedSource,
+    targetPath: resolvedTarget,
+    sha256: record.sha256,
+  };
 };
 
 const resolvePackageRoot = (): string => {
@@ -77,7 +187,28 @@ const resolvePackageRoot = (): string => {
     // Ignore unreadable candidates.
   }
 
-  return compiledPackageCandidate;
+  throw new Error(
+    "Cannot resolve package root. No verified installation of agent-skills-pi was found.",
+  );
+};
+
+const readPackageVersion = (packageRoot: string): string => {
+  const packageJsonPath = join(packageRoot, "package.json");
+
+  try {
+    const content = readFileSync(packageJsonPath, "utf-8");
+    const parsed = JSON.parse(content) as Record<string, unknown>;
+
+    if (typeof parsed.version !== "string" || parsed.version.length === 0) {
+      throw new Error("Package version is missing or not a non-empty string.");
+    }
+
+    return parsed.version;
+  } catch (error) {
+    throw new Error(
+      `Failed to read package version from ${packageJsonPath}: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
 };
 
 const resolveProjectRoot = (): string | null => {
@@ -96,13 +227,12 @@ const resolveAgentTargetPath = (projectRoot: string, agentName: string): string 
   return join(projectRoot, AGENTS_DIR, agentName);
 };
 
-const normalizeOwnedAgent = (entry: OwnedAgent): OwnedAgent => ({
-  sourcePath: entry.sourcePath,
-  targetPath: entry.targetPath,
-  sha256: entry.sha256,
-});
-
-const assertOwnershipManifest = (candidate: unknown, manifestPath: string): OwnershipManifest => {
+const assertOwnershipManifest = (
+  candidate: unknown,
+  manifestPath: string,
+  packageRoot: string,
+  projectRoot: string,
+): OwnershipManifest => {
   if (!candidate || typeof candidate !== "object") {
     throw new Error(`Malformed agent-skills manifest at ${manifestPath}.`);
   }
@@ -121,26 +251,55 @@ const assertOwnershipManifest = (candidate: unknown, manifestPath: string): Owne
     );
   }
 
+  if (typeof manifest.packageVersion !== "string" || manifest.packageVersion.length === 0) {
+    throw new Error(
+      `Malformed agent-skills manifest at ${manifestPath}. Missing or invalid package version.`,
+    );
+  }
+
   if (!Array.isArray(manifest.agents)) {
     throw new Error(`Malformed agent-skills manifest at ${manifestPath}. Missing agents array.`);
   }
 
+  const seen = new Set<string>();
+  const agents: OwnedAgent[] = manifest.agents.map((entry, index) => {
+    const validated = validateOwnedAgentEntry(entry, manifestPath, packageRoot, projectRoot, index);
+
+    if (seen.has(validated.targetPath)) {
+      throw new Error(
+        `Duplicate agent entry for "${validated.targetPath}" at index ${index} in ${manifestPath}.`,
+      );
+    }
+
+    seen.add(validated.targetPath);
+    return validated;
+  });
+
   return {
     formatVersion: FORMAT_VERSION,
     packageName: PACKAGE_NAME,
-    packageVersion: String(manifest.packageVersion ?? PACKAGE_VERSION),
-    agents: manifest.agents.map((entry) => normalizeOwnedAgent(entry as OwnedAgent)),
+    packageVersion: manifest.packageVersion,
+    agents,
   };
 };
 
-const readManifest = async (manifestPath: string): Promise<OwnershipManifest | null> => {
+const readManifest = async (
+  manifestPath: string,
+  packageRoot: string,
+  projectRoot: string,
+): Promise<OwnershipManifest | null> => {
   try {
     await stat(manifestPath);
   } catch {
     return null;
   }
 
-  return assertOwnershipManifest(await readJson(manifestPath), manifestPath);
+  return assertOwnershipManifest(
+    await readJson(manifestPath),
+    manifestPath,
+    packageRoot,
+    projectRoot,
+  );
 };
 
 const writeManifest = async (manifestPath: string, manifest: OwnershipManifest): Promise<void> => {
@@ -168,33 +327,56 @@ const ensureDirectory = async (directoryPath: string): Promise<void> => {
 };
 
 const installOrUpdate = async (projectRoot: string, packageRoot: string): Promise<void> => {
+  const packageVersion = readPackageVersion(packageRoot);
   const sourceDir = join(packageRoot, SOURCE_AGENTS_DIR);
-  let sourceDirExists = false;
 
   try {
-    await stat(sourceDir);
-    sourceDirExists = true;
-  } catch {
-    sourceDirExists = false;
-  }
+    const dirStat = await lstat(sourceDir);
 
-  if (!sourceDirExists) {
+    if (dirStat.isSymbolicLink()) {
+      throw new Error("Package agents source directory must not be a symlink.");
+    }
+
+    if (!dirStat.isDirectory()) {
+      throw new Error("Package agents source directory must be a directory.");
+    }
+  } catch (error) {
+    if (
+      error instanceof Error &&
+      (error.message.includes("symlink") || error.message.includes("must be a directory"))
+    ) {
+      throw error;
+    }
+
     throw new Error("Package agents source directory is missing.");
   }
 
   for (const agentName of AGENT_NAMES) {
+    const agentPath = join(sourceDir, agentName);
+
     try {
-      await stat(join(sourceDir, agentName));
+      await stat(agentPath);
     } catch {
       throw new Error(`Package agents source directory is missing required file "${agentName}".`);
     }
+
+    assertFilePathSafe(agentPath, packageRoot, `Package source agent "${agentName}"`);
+    await assertFileIsRegular(agentPath, `Package source agent "${agentName}"`);
   }
 
   const manifestPath = resolveManifestPath(projectRoot);
-  const manifest = await readManifest(manifestPath);
+  let manifest: OwnershipManifest | null = null;
 
-  if (manifest !== null && manifest.packageName !== PACKAGE_NAME) {
-    throw new Error("Foreign agent-skills manifest detected. refusing to overwrite.");
+  try {
+    manifest = await readManifest(manifestPath, packageRoot, projectRoot);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+
+    if (message.includes("Foreign") || message.includes("foreign")) {
+      throw new Error("Refusing to overwrite a foreign agent-skills manifest.");
+    }
+
+    throw error;
   }
 
   const nextAgents: OwnedAgent[] = manifest ? [...manifest.agents] : [];
@@ -210,12 +392,20 @@ const installOrUpdate = async (projectRoot: string, packageRoot: string): Promis
     const existing = existingIndex === -1 ? null : nextAgents[existingIndex];
 
     let targetExists = false;
+    let targetIsSymlink = false;
 
     try {
-      await stat(entry.targetPath);
+      const targetStat = await lstat(entry.targetPath);
       targetExists = true;
+      targetIsSymlink = targetStat.isSymbolicLink();
     } catch {
       targetExists = false;
+      targetIsSymlink = false;
+    }
+
+    if (targetIsSymlink) {
+      console.log(`agent-skills: skipped ${agentName} (target is a symlink)`);
+      continue;
     }
 
     if (existing) {
@@ -238,16 +428,30 @@ const installOrUpdate = async (projectRoot: string, packageRoot: string): Promis
   await writeManifest(manifestPath, {
     formatVersion: FORMAT_VERSION,
     packageName: PACKAGE_NAME,
-    packageVersion: PACKAGE_VERSION,
-    agents: nextAgents.filter((entry) =>
-      AGENT_NAMES.includes(entry.targetPath.split("/").pop() as (typeof AGENT_NAMES)[number]),
-    ),
+    packageVersion,
+    agents: nextAgents.filter((entry) => {
+      const basename = entry.targetPath.split("/").pop();
+      return isAgentName(basename);
+    }),
   });
 };
 
 const status = async (projectRoot: string, packageRoot: string): Promise<void> => {
   const manifestPath = resolveManifestPath(projectRoot);
-  const manifest = await readManifest(manifestPath);
+  let manifest: OwnershipManifest | null = null;
+
+  try {
+    manifest = await readManifest(manifestPath, packageRoot, projectRoot);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+
+    if (message.includes("Foreign") || message.includes("foreign")) {
+      console.log("agent-skills: foreign manifest detected; skipping status report.");
+      return;
+    }
+
+    throw error;
+  }
 
   if (manifest === null) {
     console.log("agent-skills: not installed in this project.");
@@ -260,7 +464,10 @@ const status = async (projectRoot: string, packageRoot: string): Promise<void> =
   }
 
   for (const owned of manifest.agents) {
-    const agentName = owned.targetPath.split("/").pop() as (typeof AGENT_NAMES)[number];
+    const basename = owned.targetPath.split("/").pop();
+    const agentName = isAgentName(basename)
+      ? basename
+      : ("unknown" as (typeof AGENT_NAMES)[number]);
 
     let targetExists = false;
 
@@ -314,7 +521,20 @@ const status = async (projectRoot: string, packageRoot: string): Promise<void> =
 
 const uninstall = async (projectRoot: string, packageRoot: string): Promise<void> => {
   const manifestPath = resolveManifestPath(projectRoot);
-  const manifest = await readManifest(manifestPath);
+  let manifest: OwnershipManifest | null = null;
+
+  try {
+    manifest = await readManifest(manifestPath, packageRoot, projectRoot);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+
+    if (message.includes("Foreign") || message.includes("foreign")) {
+      console.log("agent-skills: foreign manifest detected; refusing to uninstall.");
+      return;
+    }
+
+    throw error;
+  }
 
   if (manifest === null) {
     console.log("agent-skills: nothing to uninstall (no manifest found).");
@@ -327,7 +547,10 @@ const uninstall = async (projectRoot: string, packageRoot: string): Promise<void
   }
 
   for (const owned of manifest.agents) {
-    const agentName = owned.targetPath.split("/").pop() as (typeof AGENT_NAMES)[number];
+    const basename = owned.targetPath.split("/").pop();
+    const agentName = isAgentName(basename)
+      ? basename
+      : ("unknown" as (typeof AGENT_NAMES)[number]);
 
     let targetExists = false;
 
@@ -346,8 +569,7 @@ const uninstall = async (projectRoot: string, packageRoot: string): Promise<void
     const currentHash = await sha256(owned.targetPath);
 
     if (currentHash !== owned.sha256) {
-      console.log(`agent-skills: skipped ${agentName} (hash mismatch)`);
-      continue;
+      console.log(`agent-skills: removing ${agentName} (modified since install)`);
     }
 
     await rm(owned.targetPath, { force: true });
@@ -423,19 +645,22 @@ export {
   MANIFEST_DIR,
   MANIFEST_FILE,
   PACKAGE_NAME,
-  PACKAGE_VERSION,
   SOURCE_AGENTS_DIR,
 };
 
 export type { OwnedAgent, OwnershipManifest };
 
 export {
+  assertFilePathSafe,
+  assertFileIsRegular,
   assertOwnershipManifest,
   buildManifestEntry,
   installOrUpdate,
-  normalizeOwnedAgent,
+  isHex64,
+  isPathContained,
   readJson,
   readManifest,
+  readPackageVersion,
   resolveAgentTargetPath,
   resolveManifestPath,
   resolvePackageRoot,
