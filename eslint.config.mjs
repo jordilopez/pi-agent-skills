@@ -13,5 +13,11 @@ export default [
         sourceType: "module",
       },
     },
+    rules: {
+      "no-unreachable": "warn",
+      "no-duplicate-case": "error",
+      "no-constant-condition": "warn",
+      "no-empty": "warn",
+    },
   },
 ];
