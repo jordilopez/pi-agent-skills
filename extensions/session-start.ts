@@ -54,16 +54,19 @@ const getInjection = async (): Promise<string> => {
 export default function registerSessionStartInjection(pi: ExtensionAPI): void {
   void pi.on("session_start", async (...args: unknown[]) => {
     const [, ctx] = args as unknown as [unknown, SessionStartContext];
-    const injection = await getInjection();
     const notify = ctx?.ui?.notify;
+    if (typeof notify !== "function") return;
 
-    if (typeof notify === "function") {
+    const injection = await getInjection();
+
+    if (injection.startsWith(META_SKILL_HEADER)) {
       notify("agent-skills loaded: using-agent-skills context is active.", "info");
+    } else {
+      notify("agent-skills: using-agent-skills fallback active (meta-skill not loaded).", "warn");
     }
   });
 
   void pi.on("before_agent_start", async (...args: unknown[]): Promise<BeforeAgentStartResult> => {
-    const [, , ctx] = args as unknown as [BeforeAgentStartEvent, unknown, unknown];
     const event = args[0] as BeforeAgentStartEvent;
     const injection = await getInjection();
 
