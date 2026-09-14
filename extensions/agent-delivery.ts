@@ -1,12 +1,14 @@
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { lstat, mkdir, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
-import { dirname, isAbsolute, join, normalize, relative, resolve } from "node:path";
+import { dirname, isAbsolute, join, normalize, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
 type OwnedAgent = {
+  /** Package-relative path, e.g. "agents/code-reviewer.md". */
   sourcePath: string;
+  /** Project-relative path, e.g. ".pi/agents/code-reviewer.md". */
   targetPath: string;
   sha256: string;
 };
@@ -18,7 +20,7 @@ type OwnershipManifest = {
   agents: OwnedAgent[];
 };
 
-const FORMAT_VERSION = 1;
+const FORMAT_VERSION = 2;
 const PACKAGE_NAME = "agent-skills-pi";
 const MANIFEST_DIR = ".pi/pi-agent-skills";
 const MANIFEST_FILE = "manifest.json";
@@ -65,6 +67,34 @@ const isHex64 = (value: unknown): value is string =>
 
 const isAgentName = (value: unknown): value is (typeof AGENT_NAMES)[number] =>
   typeof value === "string" && (AGENT_NAMES as readonly string[]).includes(value);
+
+const isRelativePath = (value: unknown): value is string =>
+  typeof value === "string" &&
+  value.length > 0 &&
+  !isAbsolute(value) &&
+  !hasTraversalSegments(value);
+
+/** Resolve a package-relative path against the verified package root. */
+const resolvePackagePath = (packageRoot: string, relativePath: string): string => {
+  const resolved = resolve(packageRoot, relativePath);
+
+  if (!isPathContained(resolved, packageRoot)) {
+    throw new Error(`Package-relative path escapes the package root: ${relativePath}`);
+  }
+
+  return resolved;
+};
+
+/** Resolve a project-relative path against the verified project root. */
+const resolveProjectPath = (projectRoot: string, relativePath: string): string => {
+  const resolved = resolve(projectRoot, relativePath);
+
+  if (!isPathContained(resolved, projectRoot)) {
+    throw new Error(`Project-relative path escapes the project root: ${relativePath}`);
+  }
+
+  return resolved;
+};
 
 const assertFilePathSafe = (filePath: string, root: string, label: string): void => {
   if (!isAbsolute(filePath)) {
@@ -113,8 +143,16 @@ const validateOwnedAgentEntry = (
 
   const record = entry as Record<string, unknown>;
 
-  if (typeof record.targetPath !== "string") {
-    throw new Error(`Missing target path at index ${index} in ${manifestPath}.`);
+  if (!isRelativePath(record.targetPath)) {
+    throw new Error(
+      `Invalid target path at index ${index} in ${manifestPath}. Must be a relative path with no traversal segments.`,
+    );
+  }
+
+  if (!isRelativePath(record.sourcePath)) {
+    throw new Error(
+      `Invalid source path at index ${index} in ${manifestPath}. Must be a relative path with no traversal segments.`,
+    );
   }
 
   const agentName = record.targetPath.split("/").pop();
@@ -129,31 +167,27 @@ const validateOwnedAgentEntry = (
     );
   }
 
-  if (typeof record.sourcePath !== "string") {
-    throw new Error(`Missing source path at index ${index} in ${manifestPath}.`);
-  }
+  const expectedSource = `${SOURCE_AGENTS_DIR}/${agentName}`;
+  const normalizedSource = normalize(record.sourcePath);
 
-  const expectedSource = join(packageRoot, SOURCE_AGENTS_DIR, agentName);
-  const resolvedSource = resolve(record.sourcePath);
-
-  if (resolvedSource !== resolve(expectedSource)) {
+  if (normalizedSource !== expectedSource) {
     throw new Error(
       `Source path at index ${index} does not point to the expected package agent file: ${record.sourcePath}`,
     );
   }
 
-  const expectedTarget = join(projectRoot, AGENTS_DIR, agentName);
-  const resolvedTarget = resolve(record.targetPath);
+  const expectedTarget = `${AGENTS_DIR}/${agentName}`;
+  const normalizedTarget = normalize(record.targetPath);
 
-  if (resolvedTarget !== resolve(expectedTarget)) {
+  if (normalizedTarget !== expectedTarget) {
     throw new Error(
       `Target path at index ${index} does not point to the expected project agent file: ${record.targetPath}`,
     );
   }
 
   return {
-    sourcePath: resolvedSource,
-    targetPath: resolvedTarget,
+    sourcePath: normalizedSource,
+    targetPath: normalizedTarget,
     sha256: record.sha256,
   };
 };
@@ -223,10 +257,6 @@ const resolveManifestPath = (projectRoot: string): string => {
   return join(projectRoot, MANIFEST_DIR, MANIFEST_FILE);
 };
 
-const resolveAgentTargetPath = (projectRoot: string, agentName: string): string => {
-  return join(projectRoot, AGENTS_DIR, agentName);
-};
-
 const assertOwnershipManifest = (
   candidate: unknown,
   manifestPath: string,
@@ -238,6 +268,12 @@ const assertOwnershipManifest = (
   }
 
   const manifest = candidate as Record<string, unknown>;
+
+  if (manifest.formatVersion === 1) {
+    throw new Error(
+      `Legacy agent-skills manifest at ${manifestPath}. Format version 1 is no longer supported. Run /agent-skills:uninstall then /agent-skills:install to migrate.`,
+    );
+  }
 
   if (manifest.formatVersion !== FORMAT_VERSION) {
     throw new Error(
@@ -311,13 +347,14 @@ const buildManifestEntry = async (
   projectRoot: string,
   agentName: string,
 ): Promise<OwnedAgent> => {
-  const sourcePath = join(packageRoot, SOURCE_AGENTS_DIR, agentName);
-  const targetPath = resolveAgentTargetPath(projectRoot, agentName);
-  const fileHash = await sha256(sourcePath);
+  const sourceRelative = `${SOURCE_AGENTS_DIR}/${agentName}`;
+  const targetRelative = `${AGENTS_DIR}/${agentName}`;
+  const resolvedSource = resolvePackagePath(packageRoot, sourceRelative);
+  const fileHash = await sha256(resolvedSource);
 
   return {
-    sourcePath,
-    targetPath,
+    sourcePath: sourceRelative,
+    targetPath: targetRelative,
     sha256: fileHash,
   };
 };
@@ -386,6 +423,8 @@ const installOrUpdate = async (projectRoot: string, packageRoot: string): Promis
 
   for (const agentName of AGENT_NAMES) {
     const entry = await buildManifestEntry(packageRoot, projectRoot, agentName);
+    const resolvedTarget = resolveProjectPath(projectRoot, entry.targetPath);
+    const resolvedSource = resolvePackagePath(packageRoot, entry.sourcePath);
     const existingIndex = nextAgents.findIndex(
       (current) => current.targetPath === entry.targetPath,
     );
@@ -395,7 +434,7 @@ const installOrUpdate = async (projectRoot: string, packageRoot: string): Promis
     let targetIsSymlink = false;
 
     try {
-      const targetStat = await lstat(entry.targetPath);
+      const targetStat = await lstat(resolvedTarget);
       targetExists = true;
       targetIsSymlink = targetStat.isSymbolicLink();
     } catch {
@@ -409,7 +448,7 @@ const installOrUpdate = async (projectRoot: string, packageRoot: string): Promis
     }
 
     if (existing) {
-      await writeFile(entry.targetPath, await readFile(entry.sourcePath));
+      await writeFile(resolvedTarget, await readFile(resolvedSource));
       nextAgents[existingIndex] = entry;
       console.log(`agent-skills: updated ${agentName}`);
       continue;
@@ -420,7 +459,7 @@ const installOrUpdate = async (projectRoot: string, packageRoot: string): Promis
       continue;
     }
 
-    await writeFile(entry.targetPath, await readFile(entry.sourcePath));
+    await writeFile(resolvedTarget, await readFile(resolvedSource));
     nextAgents.push(entry);
     console.log(`agent-skills: installed ${agentName}`);
   }
@@ -469,10 +508,11 @@ const status = async (projectRoot: string, packageRoot: string): Promise<void> =
       ? basename
       : ("unknown" as (typeof AGENT_NAMES)[number]);
 
+    const resolvedTarget = resolveProjectPath(projectRoot, owned.targetPath);
     let targetExists = false;
 
     try {
-      await stat(owned.targetPath);
+      await stat(resolvedTarget);
       targetExists = true;
     } catch {
       targetExists = false;
@@ -483,7 +523,7 @@ const status = async (projectRoot: string, packageRoot: string): Promise<void> =
       continue;
     }
 
-    const currentHash = await sha256(owned.targetPath);
+    const currentHash = await sha256(resolvedTarget);
 
     if (currentHash === owned.sha256) {
       console.log(`agent-skills: ${agentName} installed`);
@@ -498,13 +538,14 @@ const status = async (projectRoot: string, packageRoot: string): Promise<void> =
     const agentDirEntries = await readdir(join(projectRoot, AGENTS_DIR));
 
     for (const entry of agentDirEntries) {
-      const absoluteEntry = join(projectRoot, AGENTS_DIR, entry);
+      const relativeEntry = `${AGENTS_DIR}/${entry}`;
 
-      if (ownedTargetPaths.has(absoluteEntry)) {
+      if (ownedTargetPaths.has(relativeEntry)) {
         continue;
       }
 
       try {
+        const absoluteEntry = join(projectRoot, AGENTS_DIR, entry);
         const entryStat = await stat(absoluteEntry);
 
         if (entryStat.isFile()) {
@@ -552,10 +593,11 @@ const uninstall = async (projectRoot: string, packageRoot: string): Promise<void
       ? basename
       : ("unknown" as (typeof AGENT_NAMES)[number]);
 
+    const resolvedTarget = resolveProjectPath(projectRoot, owned.targetPath);
     let targetExists = false;
 
     try {
-      await stat(owned.targetPath);
+      await stat(resolvedTarget);
       targetExists = true;
     } catch {
       targetExists = false;
@@ -566,13 +608,13 @@ const uninstall = async (projectRoot: string, packageRoot: string): Promise<void
       continue;
     }
 
-    const currentHash = await sha256(owned.targetPath);
+    const currentHash = await sha256(resolvedTarget);
 
     if (currentHash !== owned.sha256) {
       console.log(`agent-skills: removing ${agentName} (modified since install)`);
     }
 
-    await rm(owned.targetPath, { force: true });
+    await rm(resolvedTarget, { force: true });
     console.log(`agent-skills: removed ${agentName}`);
   }
 
