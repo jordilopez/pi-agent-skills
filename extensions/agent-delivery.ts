@@ -84,9 +84,10 @@ const writeFileAtomic = async (filePath: string, content: string | Buffer): Prom
 };
 
 const isPathContained = (candidate: string, root: string): boolean => {
-  const resolvedCandidate = resolve(candidate);
-  const resolvedRoot = resolve(root);
-  return resolvedCandidate === resolvedRoot || resolvedCandidate.startsWith(`${resolvedRoot}/`);
+  // Use platform-aware relativization so containment is correct on Windows
+  // (backslash separators) and on roots with a trailing separator.
+  const relativePath = relative(resolve(root), resolve(candidate));
+  return relativePath === "" || (!relativePath.startsWith("..") && !isAbsolute(relativePath));
 };
 
 const hasTraversalSegments = (relativePath: string): boolean => {
