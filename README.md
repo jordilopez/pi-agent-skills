@@ -10,10 +10,14 @@ Install the package from its public Git repository once the repository owner and
 pi install git:github.com/<owner>/<repo>
 ```
 
-For local development, install from a checkout:
+For local development, install from a checkout using either an absolute or relative path:
 
 ```bash
-pi install /path/to/pi-agent-skills
+# Absolute path
+pi install /absolute/path/to/pi-agent-skills
+
+# Relative path from the current directory
+pi install ./relative/path
 ```
 
 Skills, prompts, extensions, and package resources are immediately available after `pi install`; no copy step is needed. This package is distributed through Git and does not require npm publication.
@@ -107,11 +111,12 @@ Ownership is tracked in:
 The behavior is deliberately ownership-aware:
 
 - `install` creates missing package-owned agents.
-- `update` refreshes all agents already recorded as owned and creates missing agents when there is no collision.
+- `update` refreshes every manifest-owned agent, even when its local contents have been modified, and creates missing agents when there is no collision.
 - `status` reports installed, stale, missing, and foreign files without mutating the project.
-- `uninstall` removes only files still owned by this package and then removes the ownership manifest.
-- A foreign agent file with a colliding name is never overwritten or deleted.
-- A foreign or malformed ownership manifest is not overwritten or acted on.
+- `uninstall` removes every manifest-owned agent regardless of local modification, reports modified files before removal, and then removes the ownership manifest.
+- Foreign agent files, including uncolliding files and files with colliding names, are preserved and never overwritten or deleted.
+- Malformed, foreign, or duplicate ownership manifests are refused without mutation.
+- Manifest traversal paths, absolute paths outside the project, unsafe symlinks, and non-regular-file targets are rejected without mutation.
 
 ## Coexistence guarantees
 
@@ -121,7 +126,7 @@ This package is designed to coexist with a project's existing Pi setup:
 - Prompt templates and other workflows stay in the installed package and are never copied into projects.
 - No files are written to `~/.pi/agent/agents/` or any other global agent directory.
 - Agent delivery touches only this package's four owned agent files under the target project's `.pi/agents/` directory.
-- Foreign project agents are preserved, including colliding filenames.
+- Foreign project agents are preserved, including uncolliding files and colliding filenames.
 - The package does not modify Pi itself.
 
 ## Provenance
