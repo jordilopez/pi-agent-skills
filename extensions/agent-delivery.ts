@@ -1,6 +1,6 @@
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
-import { lstat, mkdir, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
+import { lstat, mkdir, readFile, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
 import { dirname, isAbsolute, join, normalize, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
@@ -18,6 +18,18 @@ type OwnershipManifest = {
   packageName: string;
   packageVersion: string;
   agents: OwnedAgent[];
+};
+
+type AppliedAgentChange = {
+  agentName: string;
+  action: "installed" | "updated";
+  resolvedTarget: string;
+  previousContent: Buffer | null;
+};
+
+type SkippedAgent = {
+  agentName: string;
+  reason: string;
 };
 
 const FORMAT_VERSION = 2;
@@ -46,9 +58,22 @@ const readJson = async (filePath: string): Promise<unknown> => {
   return JSON.parse(content) as unknown;
 };
 
-const writeJson = async (filePath: string, data: unknown): Promise<void> => {
-  const content = `${JSON.stringify(data, null, 2)}\n`;
-  await writeFile(filePath, content, "utf-8");
+/** Write a file atomically via a temp file in the same directory, then rename. */
+const writeFileAtomic = async (filePath: string, content: string | Buffer): Promise<void> => {
+  const tempPath = `${filePath}.tmp-${process.pid}-${randomUUID()}`;
+
+  try {
+    await writeFile(tempPath, content);
+    await rename(tempPath, filePath);
+  } catch (error) {
+    try {
+      await rm(tempPath, { force: true });
+    } catch {
+      // Best-effort cleanup of the temporary file.
+    }
+
+    throw error;
+  }
 };
 
 const isPathContained = (candidate: string, root: string): boolean => {
@@ -345,7 +370,8 @@ const readManifest = async (
 };
 
 const writeManifest = async (manifestPath: string, manifest: OwnershipManifest): Promise<void> => {
-  await writeJson(manifestPath, manifest);
+  const content = `${JSON.stringify(manifest, null, 2)}\n`;
+  await writeFileAtomic(manifestPath, content);
 };
 
 const buildManifestEntry = async (
@@ -435,6 +461,64 @@ const ensureSafeDirectory = async (
   }
 };
 
+/**
+ * Restore the filesystem to its pre-operation state by reversing applied
+ * changes: created files are deleted, updated files are restored with their
+ * captured previous content. Runs best-effort and reports per-agent outcomes.
+ */
+const rollbackAppliedChanges = async (
+  changes: AppliedAgentChange[],
+): Promise<{ rolledBack: string[]; rollbackFailures: string[] }> => {
+  const rolledBack: string[] = [];
+  const rollbackFailures: string[] = [];
+
+  for (const change of [...changes].reverse()) {
+    try {
+      if (change.previousContent === null) {
+        await rm(change.resolvedTarget, { force: true });
+      } else {
+        await writeFile(change.resolvedTarget, change.previousContent);
+      }
+
+      rolledBack.push(change.agentName);
+    } catch {
+      rollbackFailures.push(change.agentName);
+    }
+  }
+
+  return { rolledBack, rollbackFailures };
+};
+
+const describeInstallFailure = (
+  error: unknown,
+  applied: AppliedAgentChange[],
+  skipped: SkippedAgent[],
+  rollback: { rolledBack: string[]; rollbackFailures: string[] },
+): string => {
+  const reason = error instanceof Error ? error.message : String(error);
+  const parts: string[] = [`agent-skills: install/update failed: ${reason}`];
+
+  if (applied.length > 0) {
+    parts.push(`applied before failure: ${applied.map((change) => change.agentName).join(", ")}`);
+  }
+
+  if (rollback.rolledBack.length > 0) {
+    parts.push(`rolled back: ${rollback.rolledBack.join(", ")}`);
+  }
+
+  if (rollback.rollbackFailures.length > 0) {
+    parts.push(`rollback failed, manual cleanup required: ${rollback.rollbackFailures.join(", ")}`);
+  }
+
+  if (skipped.length > 0) {
+    parts.push(
+      `left untouched: ${skipped.map((skip) => `${skip.agentName} (${skip.reason})`).join(", ")}`,
+    );
+  }
+
+  return parts.join("; ");
+};
+
 const installOrUpdate = async (projectRoot: string, packageRoot: string): Promise<void> => {
   const packageVersion = readPackageVersion(packageRoot);
   const sourceDir = join(packageRoot, SOURCE_AGENTS_DIR);
@@ -489,6 +573,8 @@ const installOrUpdate = async (projectRoot: string, packageRoot: string): Promis
   }
 
   const nextAgents: OwnedAgent[] = manifest ? [...manifest.agents] : [];
+  const appliedChanges: AppliedAgentChange[] = [];
+  const skippedAgents: SkippedAgent[] = [];
 
   await ensureSafeDirectory(join(projectRoot, PI_DIR), projectRoot, "Project .pi directory");
   await ensureSafeDirectory(join(projectRoot, AGENTS_DIR), projectRoot, "Managed agents directory");
@@ -499,58 +585,86 @@ const installOrUpdate = async (projectRoot: string, packageRoot: string): Promis
   );
   await assertNoSymlinkComponents(manifestPath, projectRoot, "Manifest file");
 
-  for (const agentName of AGENT_NAMES) {
-    const entry = await buildManifestEntry(packageRoot, projectRoot, agentName);
-    const resolvedTarget = resolveProjectPath(projectRoot, entry.targetPath);
-    const resolvedSource = resolvePackagePath(packageRoot, entry.sourcePath);
-    const existingIndex = nextAgents.findIndex(
-      (current) => current.targetPath === entry.targetPath,
-    );
-    const existing = existingIndex === -1 ? null : nextAgents[existingIndex];
+  try {
+    for (const agentName of AGENT_NAMES) {
+      const entry = await buildManifestEntry(packageRoot, projectRoot, agentName);
+      const resolvedTarget = resolveProjectPath(projectRoot, entry.targetPath);
+      const resolvedSource = resolvePackagePath(packageRoot, entry.sourcePath);
+      const existingIndex = nextAgents.findIndex(
+        (current) => current.targetPath === entry.targetPath,
+      );
+      const existing = existingIndex === -1 ? null : nextAgents[existingIndex];
 
-    let targetExists = false;
-    let targetIsSymlink = false;
+      let targetExists = false;
+      let targetIsSymlink = false;
 
-    try {
-      const targetStat = await lstat(resolvedTarget);
-      targetExists = true;
-      targetIsSymlink = targetStat.isSymbolicLink();
-    } catch {
-      targetExists = false;
-      targetIsSymlink = false;
+      try {
+        const targetStat = await lstat(resolvedTarget);
+        targetExists = true;
+        targetIsSymlink = targetStat.isSymbolicLink();
+      } catch {
+        targetExists = false;
+        targetIsSymlink = false;
+      }
+
+      if (targetIsSymlink) {
+        skippedAgents.push({ agentName, reason: "target is a symlink" });
+        continue;
+      }
+
+      if (existing) {
+        const previousContent = await readFile(resolvedTarget);
+        const sourceContent = await readFile(resolvedSource);
+
+        appliedChanges.push({
+          agentName,
+          action: "updated",
+          resolvedTarget,
+          previousContent,
+        });
+        await writeFileAtomic(resolvedTarget, sourceContent);
+        nextAgents[existingIndex] = entry;
+        continue;
+      }
+
+      if (targetExists) {
+        skippedAgents.push({ agentName, reason: "foreign file already exists" });
+        continue;
+      }
+
+      const sourceContent = await readFile(resolvedSource);
+
+      appliedChanges.push({
+        agentName,
+        action: "installed",
+        resolvedTarget,
+        previousContent: null,
+      });
+      await writeFileAtomic(resolvedTarget, sourceContent);
+      nextAgents.push(entry);
     }
 
-    if (targetIsSymlink) {
-      console.log(`agent-skills: skipped ${agentName} (target is a symlink)`);
-      continue;
-    }
-
-    if (existing) {
-      await writeFile(resolvedTarget, await readFile(resolvedSource));
-      nextAgents[existingIndex] = entry;
-      console.log(`agent-skills: updated ${agentName}`);
-      continue;
-    }
-
-    if (targetExists) {
-      console.log(`agent-skills: skipped ${agentName} (foreign file already exists)`);
-      continue;
-    }
-
-    await writeFile(resolvedTarget, await readFile(resolvedSource));
-    nextAgents.push(entry);
-    console.log(`agent-skills: installed ${agentName}`);
+    await writeManifest(manifestPath, {
+      formatVersion: FORMAT_VERSION,
+      packageName: PACKAGE_NAME,
+      packageVersion,
+      agents: nextAgents.filter((entry) => {
+        const basename = entry.targetPath.split("/").pop();
+        return isAgentName(basename);
+      }),
+    });
+  } catch (error) {
+    const rollback = await rollbackAppliedChanges(appliedChanges);
+    throw new Error(describeInstallFailure(error, appliedChanges, skippedAgents, rollback));
   }
 
-  await writeManifest(manifestPath, {
-    formatVersion: FORMAT_VERSION,
-    packageName: PACKAGE_NAME,
-    packageVersion,
-    agents: nextAgents.filter((entry) => {
-      const basename = entry.targetPath.split("/").pop();
-      return isAgentName(basename);
-    }),
-  });
+  for (const change of appliedChanges) {
+    console.log(`agent-skills: ${change.action} ${change.agentName}`);
+  }
+
+  for (const skipped of skippedAgents) {
+    console.log(`agent-skills: skipped ${skipped.agentName} (${skipped.reason})`);
+  }
 };
 
 const status = async (projectRoot: string, packageRoot: string): Promise<void> => {
