@@ -1,0 +1,48 @@
+{
+  "name": "agent-skills-pi",
+  "version": "0.6.9-pi.0",
+  "description": "Pi package port of addyosmani/agent-skills",
+  "private": true,
+  "keywords": [
+    "pi-package"
+  ],
+  "pi": {
+    "skills": [
+      "./skills"
+    ],
+    "prompts": [
+      "./prompts"
+    ],
+    "extensions": [
+      "./extensions"
+    ],
+    "agents": [
+      "./agents"
+    ]
+  },
+  "files": [
+    "skills/",
+    "references/",
+    "prompts/",
+    "agents/",
+    "extensions/",
+    "hooks/",
+    "docs/",
+    "README.md",
+    "LICENSE",
+    "plugin.json"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "lint": "eslint \"extensions/**/*.ts\"",
+    "format": "prettier --write package.json tsconfig*.json \"extensions/**/*.ts\" README.md \"docs/**/*.md\"",
+    "format:check": "prettier --check package.json tsconfig*.json \"extensions/**/*.ts\" README.md \"docs/**/*.md\""
+  },
+  "devDependencies": {
+    "@typescript-eslint/parser": "^8.46.0",
+    "eslint": "^9.39.1",
+    "prettier": "^3.6.2",
+    "typescript": "^5.9.3"
+  }
+}
