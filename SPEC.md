@@ -22,13 +22,17 @@ full-repo port:
 - All four upstream agents, converted to Pi subagent definitions.
 - A Pi extension implementing the session-start context/meta-skill behavior
   that maps cleanly to Pi.
+- A Pi extension command interface that installs and manages this package's
+  four agents in a project-local `.pi/agents/` directory using an ownership
+  manifest, without overwriting unrelated agents.
 - The original Claude Code hook scripts and documentation, retained for
   reference and clearly marked as non-portable where they cannot map to Pi.
 
 Success means that users can install the repository with `pi install`, discover
 all skills through Pi's system-prompt discovery and `/skill:<name>` mechanism,
-use the converted prompts and subagents, and load the session-start extension
-without making changes to Pi.
+use the converted prompts and agents, explicitly install or update only this
+package's agents in a project, and load the extensions without making changes to
+Pi.
 
 The original request grounding this specification is:
 
@@ -51,14 +55,17 @@ The distribution clarification is:
 - Pi package distributed from a public Git repository.
 - Git-only distribution; no npm publishing.
 - Pi package manifest in `package.json` under the `pi` key.
-- Node.js tooling with TypeScript for the single Pi extension.
+- Node.js tooling with TypeScript for the Pi extensions.
+- Native Node.js APIs for filesystem operations, SHA-256 hashing, path
+  validation, and JSON ownership-manifest handling.
 - Upstream source pinned to `addyosmani/agent-skills` version `0.6.9`,
   identified by the upstream `plugin.json`.
 - Pi-native resource types:
   - `skills/` for the 25 skills.
   - `prompts/` for converted commands.
-  - `agents/` for converted subagents.
-  - `extensions/` for the session-start behavior.
+  - `agents/` for the four package-owned agent sources; Pi does not discover
+    these from the package manifest, so the extension delivers them to projects.
+  - `extensions/` for session-start and project-local agent-delivery behavior.
 - TypeScript compiler for build and typecheck.
 - ESLint for linting authored TypeScript.
 - Prettier for formatting authored TypeScript, configuration, and documentation.
@@ -167,9 +174,6 @@ An implementation-ready shape is:
         ],
         "extensions": [
           "./extensions"
-        ],
-        "agents": [
-          "./agents"
         ]
       },
       "files": [
@@ -197,8 +201,10 @@ The final repository name, package name, public owner, and package version may b
 selected during implementation, but the following requirements are mandatory:
 
 - The `keywords` array contains `"pi-package"`.
-- The `pi` manifest declares `skills`, `prompts`, `extensions`, and `agents`.
-- Every declared path exists in the repository.
+- The `pi` manifest declares `skills`, `prompts`, and `extensions`; it does
+  not declare an `agents` key because Pi does not discover package agents from
+  the manifest.
+- Every declared resource path exists in the repository.
 - `references/` is included in the git repository and in the package's
   included files. It is not a Pi resource directory, but it is required for
   relative links from the skills to resolve after installation.
@@ -247,6 +253,7 @@ The target repository layout is:
       web-performance-auditor.md
     extensions/
       session-start.ts             Pi implementation of session-start injection
+      agent-delivery.ts             Project-local agent install/update commands
     hooks/
       hooks.json                   Original Claude Code hook configuration
       session-start.sh             Original reference script
@@ -288,6 +295,11 @@ The 25 skill names must be exactly:
 - `spec-driven-development`
 - `test-driven-development`
 - `using-agent-skills`
+
+The four `agents/` files are package-owned source definitions. They are not
+listed under `pi.agents` because Pi does not discover agents from a package
+manifest. The agent-delivery extension installs them into a project's
+`.pi/agents/` directory only when the user invokes its commands.
 
 Every upstream `SKILL.md` must retain its original name, description,
 frontmatter, body, and links. The additional files under
@@ -385,6 +397,31 @@ Retain the original hook scripts and documentation under `hooks/` for
 reference. They must be clearly marked in `README.md` and the hook
 documentation as Claude-Code-only where applicable.
 
+### Project-local agent delivery
+
+The package must expose a namespaced extension command interface:
+
+    /agent-skills:install
+    /agent-skills:update
+    /agent-skills:status
+    /agent-skills:uninstall
+
+These commands manage only the four agents shipped by this repository. They
+must install them into `<project>/.pi/agents/` and store ownership metadata at
+`<project>/.pi/pi-agent-skills/manifest.json`. The manifest records its format
+version, package name and version, each package-relative source path, each
+project-relative target path, and a SHA-256 content hash.
+
+Install and update must create missing package-owned agents, refresh agents
+listed in the manifest even when locally modified, skip and report foreign
+colliding files, update ownership only after successful operations, and be
+idempotent. Status must not mutate files and must report installed, missing,
+stale, and foreign/colliding entries. Uninstall may remove only manifest-owned
+agents and the package-owned manifest; it must never touch foreign agents,
+foreign manifests, global `~/.pi/agent/agents/`, workflows, skills, Pi itself,
+or other packages. Commands must fail clearly when no active project root is
+available.
+
 The following behaviors are explicitly non-portable and are not to be
 pretended to be implemented by the Pi extension:
 
@@ -412,7 +449,13 @@ Conventions:
 - Keep the extension small and focused on session-start integration.
 - Prefer explicit types at Pi API boundaries.
 - Use `const` by default and avoid mutation unless required by the Pi API.
-- Use single-purpose functions for context construction and event handling.
+- Use single-purpose functions for context construction, event handling,
+  ownership-manifest parsing, hashing, path validation, and command reporting.
+- Use native Node.js filesystem and crypto APIs for agent delivery; never use
+  shell commands for copying, deleting, or hashing agents.
+- Validate project and manifest paths before filesystem operations, and report
+  installed, updated, skipped, foreign, stale, missing, and failed states
+  explicitly.
 - Preserve source prompt semantics rather than reflowing or paraphrasing imported
   command bodies.
 - Do not run formatting over `skills/` or `references/`.
@@ -458,14 +501,20 @@ The manual smoke check must confirm:
 
 - Pi installs the git repository successfully.
 - The package loads without requiring a Pi source change.
-- All 25 skills are discovered.
-- At least one representative skill is callable through
-  `/skill:<name>`.
+- All 25 skills are discovered through the package; no project skill copy is
+  required.
+- At least one representative skill is callable through `/skill:<name>`.
 - The nine prompt templates are registered.
-- The four subagents are registered.
 - The session-start extension loads without an error.
+- The four agent-delivery commands register and use the active project root.
+- Installing into a scratch project places only this package's agents in
+  `<project>/.pi/agents/` and records ownership in the package manifest.
+- Re-running install/update refreshes owned agents but preserves foreign
+  colliding agents; status is read-only; uninstall removes only owned agents.
 - The root-level references are present in the installed package and the
   relative skill links resolve.
+- No files are created under `~/.pi/agent/agents/` and no workflows are copied
+  into the project.
 
 ## Implementation Phases and Verification
 
@@ -477,7 +526,8 @@ development tooling. Do not alter upstream content.
 Acceptance:
 
 - The package has the required `package.json` shape.
-- The `pi` manifest declares all four resource categories.
+- The `pi` manifest declares `skills`, `prompts`, and `extensions`, and has no
+  `agents` key.
 - `keywords` contains `pi-package`.
 - `npm install` succeeds.
 - Build, typecheck, lint, and format commands are executable.
@@ -518,15 +568,20 @@ Acceptance:
 The prompt and agent conversions have disjoint file ownership and may be
 implemented in parallel, followed by one manifest-level discovery check.
 
-### Phase 4: Extension and hook documentation
+### Phase 4: Extension, project-local agent delivery, and hook documentation
 
-Implement the session-start extension and retain/document the original hooks.
+Implement the session-start extension, the project-local agent-delivery command
+interface, and retain/document the original hooks.
 
 Acceptance:
 
-- The Pi extension loads through the manifest.
+- The Pi extensions load through the manifest.
 - Session-start context/meta-skill injection is implemented using Pi's lifecycle
   API.
+- Install/update/status/uninstall manage only this package's four agents under
+  `<project>/.pi/agents/` using `<project>/.pi/pi-agent-skills/manifest.json`.
+- Manifest-owned agents refresh on update; foreign colliding agents are
+  reported and preserved; status is read-only; uninstall is ownership-safe.
 - Claude-Code-only hooks remain available for reference.
 - The WebFetch cache hooks and simplify-ignore hooks are explicitly documented
   as non-portable.
@@ -558,8 +613,14 @@ Acceptance:
   after installation.
 - Preserve per-skill supporting files.
 - Preserve the nine command semantics and four agent bodies during conversion.
+- Preserve the four converted agents as package-owned source files and deliver
+  them only through explicit project-local agent commands.
 - Configure converted agents as non-pane and read-only by denying `write` and
   `edit`.
+- Record ownership, source paths, target paths, package version, and SHA-256
+  hashes for successfully delivered agents.
+- Never overwrite or delete foreign or non-owned project agents or write to the
+  global agent directory.
 - Document all Claude-Code-only hooks and unsupported behavior.
 - Run build, typecheck, lint, format, and the manual Pi installation smoke
   verification before declaring the package complete.
@@ -575,6 +636,7 @@ Acceptance:
 - Before adding runtime dependencies beyond the development tooling required
   for the extension.
 - Before attempting to map any additional Claude Code hook behavior to Pi.
+- Before changing the agent-delivery target or ownership-manifest path.
 - Before changing distribution from git-only to npm or another registry.
 - Before changing the public repository owner or URL used in acceptance
   verification.
@@ -588,6 +650,10 @@ Acceptance:
 - Never claim that Claude-Code-only hooks are implemented in Pi when their
   required events or tool names do not exist.
 - Never modify Pi itself or require a Pi fork.
+- Never copy skills into projects; `pi install` already provides package skills.
+- Never write to `~/.pi/agent/agents/` or copy workflows into projects.
+- Never overwrite or delete foreign or non-owned project agents.
+- Never install or invoke `@vanillagreen/pi-agents-tmux`.
 - Never publish the package to npm as part of this scope.
 - Never commit credentials, tokens, private keys, local machine paths that
   expose secrets, or other sensitive data.
@@ -605,6 +671,8 @@ The following are intentionally outside this repository's implementation:
 - Implementing the Claude Code simplify-ignore hooks in Pi.
 - Porting Claude Code's hook event model wholesale.
 - Adding command aliases not present in the upstream command set.
+- Copying skills into projects; skills remain supplied by the installed package.
+- Installing or managing global agents, foreign project agents, or workflows.
 - Adding an automated test suite.
 
 The existing `pi-setup` package is a separate repository and currently exposes
@@ -636,6 +704,10 @@ completed, users may see Pi's normal skill collision warning.
   that do not exist in Pi.
 - The Pi extension API may expose session-start behavior differently from the
   upstream hook model.
+- Project-root resolution or Pi trust behavior may make project-local writes
+  unavailable; commands must fail clearly rather than falling back globally.
+- A malformed or foreign ownership manifest could cause destructive behavior;
+  validate it before mutation and preserve foreign files.
 - Formatting or linting imported content could violate the verbatim-port
   requirement.
 
@@ -647,8 +719,10 @@ completed, users may see Pi's normal skill collision warning.
 - Verify installation from git, not only from the working tree.
 - Verify discovery names and reference paths after installation.
 - Document unsupported hooks instead of emulating them inaccurately.
-- Keep the extension isolated so failure of the optional session-start mapping
-  does not require changes to skill content.
+- Keep the extensions isolated so failure of optional session-start or
+  project-local delivery behavior does not require changes to skill content.
+- Validate ownership before every overwrite or deletion and hash installed
+  agent content to make update/status decisions deterministic.
 
 ### Backout
 
@@ -668,8 +742,8 @@ The package is complete only when all of the following are true:
    `pi install /abs/path/to/pi-agent-skills`, also succeeds for development
    verification.
 3. `package.json` contains `"pi-package"` in `keywords`.
-4. `package.json` declares `skills`, `prompts`, `extensions`, and `agents`
-   under `pi`.
+4. `package.json` declares `skills`, `prompts`, and `extensions` under `pi`
+   and does not contain an `agents` key.
 5. `references/` is included in the repository and installed package.
 6. All 25 required skills are present with unchanged names, descriptions,
    frontmatter, bodies, and supporting files.
@@ -682,21 +756,26 @@ The package is complete only when all of the following are true:
    `spec`, `test`, and `webperf`.
 10. The `planning` command is registered as `/planning`, with the choice
     documented rather than silently renamed to `/plan`.
-11. Exactly four subagents are registered:
-    `code-reviewer`, `security-auditor`, `test-engineer`, and
-    `web-performance-auditor`.
-12. All four subagents are non-pane and deny `write` and `edit`.
-13. The session-start Pi extension loads successfully and performs the mapped
-    context/meta-skill injection.
-14. The original hook scripts and documentation are retained and clearly label
+11. The four package-owned agents are available as source files and are
+    delivered to a project only through the namespaced agent commands.
+12. Installing or updating creates/refreshes only manifest-owned agents under
+    `<project>/.pi/agents/`, records SHA-256 ownership metadata at
+    `<project>/.pi/pi-agent-skills/manifest.json`, and preserves foreign
+    colliding agents.
+13. Status is non-mutating and reports installed, missing, stale, and foreign
+    entries; uninstall removes only owned agents and the owned manifest.
+14. The session-start and agent-delivery Pi extensions load successfully and
+    perform their supported behavior.
+15. The original hook scripts and documentation are retained and clearly label
     the WebFetch cache and simplify-ignore behavior as Claude-Code-only and
     non-portable.
-15. `npm run build` passes.
-16. `npm run typecheck` passes.
-17. `npm run lint` passes.
-18. `npm run format:check` passes after formatting authored files.
-19. No automated tests are added or required; the testing mode remains exactly
+16. `npm run build` passes.
+17. `npm run typecheck` passes.
+18. `npm run lint` passes.
+19. `npm run format:check` passes after formatting authored files.
+20. No automated tests are added or required; the testing mode remains exactly
     `Testing: none`.
-20. The README documents git-only installation, resource usage, provenance,
-    non-portable hooks, and the separate `pi-setup` collision-cleanup
+21. The README documents git-only installation, resource usage, provenance,
+    non-portable hooks, project-local agent delivery, ownership semantics,
+    coexistence guarantees, and the separate `pi-setup` collision-cleanup
     follow-up.
