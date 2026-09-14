@@ -22,62 +22,68 @@ pi install ./relative/path
 
 Skills, prompts, extensions, and package resources are immediately available after `pi install`; no copy step is needed. This package is distributed through Git and does not require npm publication.
 
-## What's included
+## Quick reference
 
-### Skills
+### Skills (25)
 
-All 25 upstream skills are available through Pi's standard `/skill:<name>` mechanism:
+All 25 upstream skills are available through Pi's standard `/skill:<name>` mechanism.
 
-- `api-and-interface-design`
-- `browser-testing-with-devtools`
-- `ci-cd-and-automation`
-- `code-review-and-quality`
-- `code-simplification`
-- `constraint-driven-development`
-- `context-engineering`
-- `debugging-and-error-recovery`
-- `deprecation-and-migration`
-- `documentation-and-adrs`
-- `doubt-driven-development`
-- `frontend-ui-engineering`
-- `git-workflow-and-versioning`
-- `idea-refine`
-- `incremental-implementation`
-- `interview-me`
-- `observability-and-instrumentation`
-- `performance-optimization`
-- `planning-and-task-breakdown`
-- `security-and-hardening`
-- `shipping-and-launch`
-- `source-driven-development`
-- `spec-driven-development`
-- `test-driven-development`
-- `using-agent-skills`
+| Phase  | Skill                               | Summary                                                                    |
+| ------ | ----------------------------------- | -------------------------------------------------------------------------- |
+| Define | `interview-me`                      | Surface what the user actually wants before any plan, spec, or code exists |
+| Define | `idea-refine`                       | Refine ideas through structured divergent and convergent thinking          |
+| Define | `spec-driven-development`           | Requirements and acceptance criteria before code                           |
+| Define | `constraint-driven-development`     | Establish quality bar as a written contract                                |
+| Plan   | `planning-and-task-breakdown`       | Decompose into small, verifiable tasks                                     |
+| Build  | `incremental-implementation`        | Thin vertical slices, test each before expanding                           |
+| Build  | `source-driven-development`         | Verify against official docs before implementing                           |
+| Build  | `doubt-driven-development`          | Adversarial fresh-context review of every non-trivial decision             |
+| Build  | `context-engineering`               | Right context at the right time                                            |
+| Build  | `frontend-ui-engineering`           | Production-quality UI with accessibility                                   |
+| Build  | `api-and-interface-design`          | Stable interfaces with clear contracts                                     |
+| Verify | `test-driven-development`           | Failing test first, then make it pass                                      |
+| Verify | `browser-testing-with-devtools`     | Chrome DevTools MCP for runtime verification                               |
+| Verify | `debugging-and-error-recovery`      | Reproduce → localize → fix → guard                                         |
+| Review | `code-review-and-quality`           | Five-axis review with quality gates                                        |
+| Review | `code-simplification`               | Preserve behavior while reducing unnecessary complexity                    |
+| Review | `security-and-hardening`            | OWASP prevention, input validation, least privilege                        |
+| Review | `performance-optimization`          | Measure first, optimize only what matters                                  |
+| Ship   | `git-workflow-and-versioning`       | Atomic commits, clean history                                              |
+| Ship   | `ci-cd-and-automation`              | Automated quality gates on every change                                    |
+| Ship   | `deprecation-and-migration`         | Remove old systems and migrate users safely                                |
+| Ship   | `documentation-and-adrs`            | Document the why, not just the what                                        |
+| Ship   | `observability-and-instrumentation` | Structured logs, RED metrics, traces, symptom-based alerts                 |
+| Ship   | `shipping-and-launch`               | Pre-launch checklist, monitoring, rollback plan                            |
+| Meta   | `using-agent-skills`                | Discovers and invokes the right skill for the current task                 |
 
-### Prompt templates
+### Prompt templates (9)
 
 The nine converted prompt templates are directly discoverable as:
 
-- `/build`
-- `/code-simplify`
-- `/constraints`
-- `/planning`
-- `/review`
-- `/ship`
-- `/spec`
-- `/test`
-- `/webperf`
+| Command          | Purpose                                             |
+| ---------------- | --------------------------------------------------- |
+| `/build`         | Implement a feature following established patterns  |
+| `/code-simplify` | Simplify code for clarity without changing behavior |
+| `/constraints`   | Define and enforce quality constraints              |
+| `/planning`      | Break work into ordered, verifiable tasks           |
+| `/review`        | Review code across multiple quality dimensions      |
+| `/ship`          | Prepare and ship a release                          |
+| `/spec`          | Define requirements and acceptance criteria         |
+| `/test`          | Write and run tests using TDD                       |
+| `/webperf`       | Analyze and optimize web performance                |
 
 The upstream command name `planning` is preserved as `/planning`; this package does not provide a `/plan` alias.
 
-### Agents and extensions
+### Agents (4)
 
-The four read-only agent definitions are retained as source files under `agents/`:
+The four read-only agent definitions are retained as source files under `agents/` and can be delivered to projects via `agent-skills:install`.
 
-- `code-reviewer.md`
-- `security-auditor.md`
-- `test-engineer.md`
-- `web-performance-auditor.md`
+| Agent                     | Purpose                                                                                           |
+| ------------------------- | ------------------------------------------------------------------------------------------------- |
+| `code-reviewer`           | Senior code reviewer evaluating correctness, readability, architecture, security, and performance |
+| `security-auditor`        | Security engineer focused on vulnerability detection, threat modeling, and secure coding          |
+| `test-engineer`           | QA engineer specialized in test strategy, writing, and coverage analysis                          |
+| `web-performance-auditor` | Web performance engineer focused on Core Web Vitals and structural anti-patterns                  |
 
 The session-start extension is auto-loaded by Pi. It registers a `before_agent_start` handler that injects the full `using-agent-skills` meta-skill content into the model-visible system prompt, and reports a user-visible notice at session start. The agent-delivery extension provides explicit project-local commands for installing those four agents when they are needed.
 
