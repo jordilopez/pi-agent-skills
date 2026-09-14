@@ -4,10 +4,10 @@
 
 ## Installation
 
-Install the package from its public Git repository once the repository owner and URL are finalized:
+Install the package from its public Git repository:
 
 ```bash
-pi install git:github.com/<owner>/<repo>
+pi install git:github.com/jordilopez/pi-agent-skills
 ```
 
 For local development, install from a checkout using either an absolute or relative path:
@@ -166,8 +166,7 @@ The Pi session-start extension partially covers the portable upstream session-st
 
 - Five skills overlap with the separate `pi-setup` package: `code-review-and-quality`, `incremental-implementation`, `planning-and-task-breakdown`, `spec-driven-development`, and `test-driven-development`. Removing those overlapping skills from `pi-setup` is a separate approved follow-up and is not implemented here. Until that cleanup is complete, Pi may show its normal skill collision warning.
 - `/planning` is the preserved prompt name. There is no `/plan` alias.
-- The public repository owner and final public URL are still to be selected; the installation example intentionally uses `<owner>/<repo>`.
-- Claude Code-only hooks and behaviors described above are reference artifacts, not Pi features.
+- - Claude Code-only hooks and behaviors described above are reference artifacts, not Pi features.
 
 ## Development
 

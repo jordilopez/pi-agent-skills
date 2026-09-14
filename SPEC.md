@@ -11,7 +11,7 @@ itself or requiring users to install an npm package.
 
 The acceptance installation path is:
 
-    pi install git:github.com/<owner>/<repo>
+    pi install git:github.com/jordilopez/pi-agent-skills
 
 The package must provide the complete upstream resource set required by the
 full-repo port:
@@ -130,7 +130,7 @@ A non-mutating format verification command should also be available:
 
 Use the public repository URL:
 
-    pi install git:github.com/<owner>/<repo>
+    pi install git:github.com/jordilopez/pi-agent-skills
 
 During local development, the equivalent is:
 
@@ -139,7 +139,7 @@ During local development, the equivalent is:
 If a specific revision is required for verification, use Pi's supported git
 reference syntax:
 
-    pi install git:github.com/<owner>/<repo>@<ref>
+    pi install git:github.com/jordilopez/pi-agent-skills@<ref>
 
 After installation, inspect Pi's discovered resources and manually verify the
 skills, prompts, agents, and extension load.
@@ -494,7 +494,7 @@ Verification is limited to:
 4. `npm run format:check` after `npm run format` has been applied to authored
    files.
 5. A manual Pi installation smoke check using
-   `pi install git:github.com/<owner>/<repo>` or
+   `pi install git:github.com/jordilopez/pi-agent-skills` or
    `pi install /abs/path/to/pi-agent-skills`.
 
 The manual smoke check must confirm:
@@ -736,7 +736,7 @@ independently in that repository if it has already been performed.
 
 The package is complete only when all of the following are true:
 
-1. `pi install git:github.com/<owner>/<repo>` succeeds from a clean environment
+1. `pi install git:github.com/jordilopez/pi-agent-skills` succeeds from a clean environment
    with no changes to Pi.
 2. A local equivalent,
    `pi install /abs/path/to/pi-agent-skills`, also succeeds for development
