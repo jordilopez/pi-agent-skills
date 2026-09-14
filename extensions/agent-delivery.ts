@@ -32,6 +32,8 @@ type SkippedAgent = {
   reason: string;
 };
 
+type TargetState = "missing" | "symlink" | "directory" | "regular" | "other";
+
 const FORMAT_VERSION = 2;
 const PACKAGE_NAME = "agent-skills-pi";
 const MANIFEST_DIR = ".pi/pi-agent-skills";
@@ -667,6 +669,43 @@ const installOrUpdate = async (projectRoot: string, packageRoot: string): Promis
   }
 };
 
+const inspectTargetState = async (resolvedTarget: string): Promise<TargetState> => {
+  let targetStat;
+
+  try {
+    targetStat = await lstat(resolvedTarget);
+  } catch {
+    return "missing";
+  }
+
+  if (targetStat.isSymbolicLink()) {
+    return "symlink";
+  }
+
+  if (targetStat.isDirectory()) {
+    return "directory";
+  }
+
+  if (targetStat.isFile()) {
+    return "regular";
+  }
+
+  return "other";
+};
+
+const describeTargetState = (state: TargetState): string => {
+  switch (state) {
+    case "symlink":
+      return "target is a symlink";
+    case "directory":
+      return "target is a directory";
+    case "other":
+      return "target is not a regular file";
+    default:
+      return `target state is ${state}`;
+  }
+};
+
 const status = async (projectRoot: string, packageRoot: string): Promise<void> => {
   const manifestPath = resolveManifestPath(projectRoot);
   let manifest: OwnershipManifest | null = null;
@@ -701,17 +740,17 @@ const status = async (projectRoot: string, packageRoot: string): Promise<void> =
       : ("unknown" as (typeof AGENT_NAMES)[number]);
 
     const resolvedTarget = resolveProjectPath(projectRoot, owned.targetPath);
-    let targetExists = false;
+    const targetState = await inspectTargetState(resolvedTarget);
 
-    try {
-      await stat(resolvedTarget);
-      targetExists = true;
-    } catch {
-      targetExists = false;
+    if (targetState === "missing") {
+      console.log(`agent-skills: ${agentName} missing`);
+      continue;
     }
 
-    if (!targetExists) {
-      console.log(`agent-skills: ${agentName} missing`);
+    if (targetState !== "regular") {
+      console.log(
+        `agent-skills: ${agentName} unsafe (${describeTargetState(targetState)}); not hashed`,
+      );
       continue;
     }
 
@@ -744,10 +783,12 @@ const status = async (projectRoot: string, packageRoot: string): Promise<void> =
 
       try {
         const absoluteEntry = join(projectRoot, AGENTS_DIR, entry);
-        const entryStat = await stat(absoluteEntry);
+        const entryStat = await lstat(absoluteEntry);
 
         if (entryStat.isFile()) {
           console.log(`agent-skills: foreign file ${entry}`);
+        } else if (entryStat.isSymbolicLink()) {
+          console.log(`agent-skills: foreign symlink ${entry}`);
         }
       } catch {
         // Ignore inaccessible entries.
@@ -798,17 +839,17 @@ const uninstall = async (projectRoot: string, packageRoot: string): Promise<void
       : ("unknown" as (typeof AGENT_NAMES)[number]);
 
     const resolvedTarget = resolveProjectPath(projectRoot, owned.targetPath);
-    let targetExists = false;
+    const targetState = await inspectTargetState(resolvedTarget);
 
-    try {
-      await stat(resolvedTarget);
-      targetExists = true;
-    } catch {
-      targetExists = false;
+    if (targetState === "missing") {
+      console.log(`agent-skills: skipped ${agentName} (already missing)`);
+      continue;
     }
 
-    if (!targetExists) {
-      console.log(`agent-skills: skipped ${agentName} (already missing)`);
+    if (targetState !== "regular") {
+      console.log(
+        `agent-skills: skipped ${agentName} (unsafe: ${describeTargetState(targetState)}); preserved`,
+      );
       continue;
     }
 
