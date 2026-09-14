@@ -2,6 +2,7 @@
   "name": "agent-skills-pi",
   "version": "0.6.9-pi.0",
   "description": "Pi package port of addyosmani/agent-skills",
+  "type": "module",
   "private": true,
   "keywords": [
     "pi-package"
@@ -40,6 +41,7 @@
     "format:check": "prettier --check package.json tsconfig*.json \"extensions/**/*.ts\" README.md \"docs/**/*.md\""
   },
   "devDependencies": {
+    "@types/node": "^26.5.1",
     "@typescript-eslint/parser": "^8.46.0",
     "eslint": "^9.39.1",
     "prettier": "^3.6.2",
