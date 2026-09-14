@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { lstat, mkdir, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
-import { dirname, isAbsolute, join, normalize, resolve } from "node:path";
+import { dirname, isAbsolute, join, normalize, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
@@ -24,6 +24,7 @@ const FORMAT_VERSION = 2;
 const PACKAGE_NAME = "agent-skills-pi";
 const MANIFEST_DIR = ".pi/pi-agent-skills";
 const MANIFEST_FILE = "manifest.json";
+const PI_DIR = ".pi";
 const AGENTS_DIR = ".pi/agents";
 const SOURCE_AGENTS_DIR = "agents";
 const AGENT_NAMES = [
@@ -47,7 +48,6 @@ const readJson = async (filePath: string): Promise<unknown> => {
 
 const writeJson = async (filePath: string, data: unknown): Promise<void> => {
   const content = `${JSON.stringify(data, null, 2)}\n`;
-  await mkdir(dirname(filePath), { recursive: true });
   await writeFile(filePath, content, "utf-8");
 };
 
@@ -324,10 +324,16 @@ const readManifest = async (
   packageRoot: string,
   projectRoot: string,
 ): Promise<OwnershipManifest | null> => {
-  try {
-    await stat(manifestPath);
-  } catch {
+  const exists = await assertNoSymlinkComponents(manifestPath, projectRoot, "Manifest path");
+
+  if (!exists) {
     return null;
+  }
+
+  const manifestStat = await lstat(manifestPath);
+
+  if (!manifestStat.isFile()) {
+    throw new Error(`Manifest path must be a regular file: ${manifestPath}`);
   }
 
   return assertOwnershipManifest(
@@ -359,8 +365,74 @@ const buildManifestEntry = async (
   };
 };
 
-const ensureDirectory = async (directoryPath: string): Promise<void> => {
-  await mkdir(directoryPath, { recursive: true });
+/**
+ * Walk every path component from `root` down to `targetPath`, rejecting any
+ * existing symlink. Returns `true` when the full path exists, `false` when a
+ * component (and therefore everything below it) is missing.
+ */
+const assertNoSymlinkComponents = async (
+  targetPath: string,
+  root: string,
+  label: string,
+): Promise<boolean> => {
+  const resolvedRoot = resolve(root);
+  const resolvedTarget = resolve(targetPath);
+  const relativeTarget = relative(resolvedRoot, resolvedTarget);
+
+  if (relativeTarget === "") {
+    return true;
+  }
+
+  if (relativeTarget.startsWith("..") || isAbsolute(relativeTarget)) {
+    throw new Error(`${label} is outside the verified root: ${targetPath}`);
+  }
+
+  const segments = relativeTarget.split(sep).filter((segment) => segment.length > 0);
+  let current = resolvedRoot;
+
+  for (const segment of segments) {
+    current = join(current, segment);
+
+    let componentStat;
+
+    try {
+      componentStat = await lstat(current);
+    } catch {
+      return false;
+    }
+
+    if (componentStat.isSymbolicLink()) {
+      throw new Error(`${label} must not traverse a symlink: ${current}`);
+    }
+  }
+
+  return true;
+};
+
+/**
+ * Create a managed directory only after confirming no existing component in
+ * its path is a symlink, then verify the final object is a real directory.
+ */
+const ensureSafeDirectory = async (
+  directoryPath: string,
+  root: string,
+  label: string,
+): Promise<void> => {
+  const exists = await assertNoSymlinkComponents(directoryPath, root, label);
+
+  if (!exists) {
+    await mkdir(directoryPath, { recursive: true });
+  }
+
+  const directoryStat = await lstat(directoryPath);
+
+  if (directoryStat.isSymbolicLink()) {
+    throw new Error(`${label} must not be a symlink: ${directoryPath}`);
+  }
+
+  if (!directoryStat.isDirectory()) {
+    throw new Error(`${label} must be a directory: ${directoryPath}`);
+  }
 };
 
 const installOrUpdate = async (projectRoot: string, packageRoot: string): Promise<void> => {
@@ -418,8 +490,14 @@ const installOrUpdate = async (projectRoot: string, packageRoot: string): Promis
 
   const nextAgents: OwnedAgent[] = manifest ? [...manifest.agents] : [];
 
-  await ensureDirectory(join(projectRoot, AGENTS_DIR));
-  await ensureDirectory(dirname(manifestPath));
+  await ensureSafeDirectory(join(projectRoot, PI_DIR), projectRoot, "Project .pi directory");
+  await ensureSafeDirectory(join(projectRoot, AGENTS_DIR), projectRoot, "Managed agents directory");
+  await ensureSafeDirectory(
+    join(projectRoot, MANIFEST_DIR),
+    projectRoot,
+    "Managed manifest directory",
+  );
+  await assertNoSymlinkComponents(manifestPath, projectRoot, "Manifest file");
 
   for (const agentName of AGENT_NAMES) {
     const entry = await buildManifestEntry(packageRoot, projectRoot, agentName);
@@ -534,6 +612,12 @@ const status = async (projectRoot: string, packageRoot: string): Promise<void> =
 
   const ownedTargetPaths = new Set(manifest.agents.map((entry) => entry.targetPath));
 
+  await assertNoSymlinkComponents(
+    join(projectRoot, AGENTS_DIR),
+    projectRoot,
+    "Managed agents directory",
+  );
+
   try {
     const agentDirEntries = await readdir(join(projectRoot, AGENTS_DIR));
 
@@ -586,6 +670,12 @@ const uninstall = async (projectRoot: string, packageRoot: string): Promise<void
     console.log("agent-skills: foreign manifest detected; refusing to uninstall.");
     return;
   }
+
+  await assertNoSymlinkComponents(
+    join(projectRoot, AGENTS_DIR),
+    projectRoot,
+    "Managed agents directory",
+  );
 
   for (const owned of manifest.agents) {
     const basename = owned.targetPath.split("/").pop();
