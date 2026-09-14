@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { readFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
@@ -20,9 +20,10 @@ const NOT_FOUND_SUFFIX =
 
 const PACKAGE_ROOT = dirname(fileURLToPath(new URL("..", import.meta.url)));
 
-const readMetaSkillText = (): string => {
+const readMetaSkillText = async (): Promise<string> => {
   const metaSkillPath = resolve(PACKAGE_ROOT, "skills", "using-agent-skills", "SKILL.md");
-  return readFileSync(metaSkillPath, "utf-8");
+  const buffer = await readFile(metaSkillPath);
+  return buffer.toString("utf-8");
 };
 
 const buildSessionStartNotice = (metaSkillContent: string | null): string => {
@@ -38,9 +39,9 @@ const buildSessionStartNotice = (metaSkillContent: string | null): string => {
   ].join("\n\n");
 };
 
-const buildNotice = (): string => {
+const buildNotice = async (): Promise<string> => {
   try {
-    return buildSessionStartNotice(readMetaSkillText());
+    return buildSessionStartNotice(await readMetaSkillText());
   } catch {
     return buildSessionStartNotice(null);
   }
@@ -49,7 +50,7 @@ const buildNotice = (): string => {
 export default function registerSessionStartInjection(pi: ExtensionAPI): void {
   void pi.on("session_start", async (...args: unknown[]) => {
     const [, ctx] = args as [SessionStartEvent, SessionStartContext];
-    const notice = buildNotice();
+    const notice = await buildNotice();
     const notify = ctx?.ui?.notify;
 
     if (typeof notify === "function") {

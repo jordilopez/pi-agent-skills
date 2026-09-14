@@ -580,63 +580,50 @@ const uninstall = async (projectRoot: string, packageRoot: string): Promise<void
   console.log("agent-skills: manifest removed.");
 };
 
+// Reusable command-context helper: resolves project root from Pi's cwd or process.cwd().
+const resolveProjectRootForCommand = (ctx: { cwd?: string } | undefined): string => {
+  const projectRoot = ctx?.cwd ?? resolveProjectRoot();
+
+  if (!projectRoot) {
+    throw new Error("agent-skills: could not determine the current project root.");
+  }
+
+  return projectRoot;
+};
+
 const registerAgentDelivery = (pi: ExtensionAPI): void => {
   pi.registerCommand("agent-skills:install", {
     description: "Install this package's owned agents into the current project.",
     handler: async (_args, ctx) => {
-      const projectRoot = ctx?.cwd ?? resolveProjectRoot();
-
-      if (!projectRoot) {
-        console.error("agent-skills: could not determine the current project root.");
-        return;
-      }
-
-      await installOrUpdate(projectRoot, resolvePackageRoot());
+      await installOrUpdate(resolveProjectRootForCommand(ctx), resolvePackageRoot());
     },
   });
 
   pi.registerCommand("agent-skills:update", {
     description: "Refresh this package's owned agents in the current project.",
     handler: async (_args, ctx) => {
-      const projectRoot = ctx?.cwd ?? resolveProjectRoot();
-
-      if (!projectRoot) {
-        console.error("agent-skills: could not determine the current project root.");
-        return;
-      }
-
-      await installOrUpdate(projectRoot, resolvePackageRoot());
+      await installOrUpdate(resolveProjectRootForCommand(ctx), resolvePackageRoot());
     },
   });
 
   pi.registerCommand("agent-skills:status", {
     description: "Show owned agent status for the current project.",
     handler: async (_args, ctx) => {
-      const projectRoot = ctx?.cwd ?? resolveProjectRoot();
-
-      if (!projectRoot) {
-        console.error("agent-skills: could not determine the current project root.");
-        return;
-      }
-
-      await status(projectRoot, resolvePackageRoot());
+      await status(resolveProjectRootForCommand(ctx), resolvePackageRoot());
     },
   });
 
   pi.registerCommand("agent-skills:uninstall", {
     description: "Remove this package's owned agents and manifest from the current project.",
     handler: async (_args, ctx) => {
-      const projectRoot = ctx?.cwd ?? resolveProjectRoot();
-
-      if (!projectRoot) {
-        console.error("agent-skills: could not determine the current project root.");
-        return;
-      }
-
-      await uninstall(projectRoot, resolvePackageRoot());
+      await uninstall(resolveProjectRootForCommand(ctx), resolvePackageRoot());
     },
   });
 };
+
+// Public API: the default export is the only entry point Pi uses.
+// Named exports below are the minimum reusable types and constants for
+// external testing, documentation, or tooling that inspects this extension.
 
 export {
   AGENT_NAMES,
@@ -650,26 +637,6 @@ export {
 
 export type { OwnedAgent, OwnershipManifest };
 
-export {
-  assertFilePathSafe,
-  assertFileIsRegular,
-  assertOwnershipManifest,
-  buildManifestEntry,
-  installOrUpdate,
-  isHex64,
-  isPathContained,
-  readJson,
-  readManifest,
-  readPackageVersion,
-  resolveAgentTargetPath,
-  resolveManifestPath,
-  resolvePackageRoot,
-  resolveProjectRoot,
-  sha256,
-  status,
-  uninstall,
-  writeJson,
-  writeManifest,
-};
+export { installOrUpdate, resolvePackageRoot, status, uninstall };
 
 export default registerAgentDelivery;
