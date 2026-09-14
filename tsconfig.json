@@ -8,7 +8,7 @@
     "skipLibCheck": true,
     "baseUrl": ".",
     "paths": {
-      "@earendil-works/pi-coding-agent": ["./extensions/pi-coding-agent.d.ts"]
+      "@earendil-works/pi-coding-agent": ["./types/pi-coding-agent.d.ts"]
     },
     "noEmit": true,
     "rootDir": "extensions",
