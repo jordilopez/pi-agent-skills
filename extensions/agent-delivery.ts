@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { lstat, mkdir, readFile, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
-import { dirname, isAbsolute, join, normalize, relative, resolve, sep } from "node:path";
+import { dirname, isAbsolute, join, normalize, posix, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
@@ -55,6 +55,9 @@ const AGENT_NAMES = [
 
 const HEX64_RE = /^[0-9a-f]{64}$/;
 
+/** Normalize a manifest path to a POSIX contract string (forward slashes). */
+const posixNormalize = (p: string): string => posix.normalize(p.replace(/\\/g, "/"));
+
 const sha256 = async (filePath: string): Promise<string> => {
   const buffer = await readFile(filePath);
   return createHash("sha256").update(buffer).digest("hex");
@@ -91,7 +94,10 @@ const isPathContained = (candidate: string, root: string): boolean => {
 };
 
 const hasTraversalSegments = (relativePath: string): boolean => {
-  const normalized = normalize(relativePath);
+  // Normalize to POSIX separators so the check is correct on Windows
+  // (path.normalize on Windows converts / to \, which would miss an
+  // absolute /foo on Windows since startsWith("/") would be false).
+  const normalized = posixNormalize(relativePath);
   return normalized.startsWith("..") || normalized.startsWith("/");
 };
 
@@ -166,8 +172,6 @@ const assertFileIsRegular = async (filePath: string, label: string): Promise<voi
 const validateOwnedAgentEntry = (
   entry: unknown,
   manifestPath: string,
-  packageRoot: string,
-  projectRoot: string,
   index: number,
 ): OwnedAgent => {
   if (!entry || typeof entry !== "object") {
@@ -201,7 +205,7 @@ const validateOwnedAgentEntry = (
   }
 
   const expectedSource = `${SOURCE_AGENTS_DIR}/${agentName}`;
-  const normalizedSource = normalize(record.sourcePath);
+  const normalizedSource = posixNormalize(record.sourcePath);
 
   if (normalizedSource !== expectedSource) {
     throw new Error(
@@ -210,7 +214,7 @@ const validateOwnedAgentEntry = (
   }
 
   const expectedTarget = `${AGENTS_DIR}/${agentName}`;
-  const normalizedTarget = normalize(record.targetPath);
+  const normalizedTarget = posixNormalize(record.targetPath);
 
   if (normalizedTarget !== expectedTarget) {
     throw new Error(
@@ -332,7 +336,7 @@ const assertOwnershipManifest = (
 
   const seen = new Set<string>();
   const agents: OwnedAgent[] = manifest.agents.map((entry, index) => {
-    const validated = validateOwnedAgentEntry(entry, manifestPath, packageRoot, projectRoot, index);
+    const validated = validateOwnedAgentEntry(entry, manifestPath, index);
 
     if (seen.has(validated.targetPath)) {
       throw new Error(
@@ -456,6 +460,9 @@ const ensureSafeDirectory = async (
 
   if (!exists) {
     await mkdir(directoryPath, { recursive: true });
+    // Re-check after creation: an attacker may have raced an intermediate symlink
+    // in the gap between the original check and the mkdir.
+    await assertNoSymlinkComponents(directoryPath, root, label);
   }
 
   const directoryStat = await lstat(directoryPath);
@@ -483,9 +490,22 @@ const rollbackAppliedChanges = async (
   for (const change of [...changes].reverse()) {
     try {
       if (change.previousContent === null) {
+        // Remove a file created during the forward operation.
+        // rm on a symlink removes the entry itself, not the target.
         await rm(change.resolvedTarget, { force: true });
       } else {
-        await writeFile(change.resolvedTarget, change.previousContent);
+        // Guard: only restore if the target is a regular file, not a symlink
+        // that may have appeared after the forward write.
+        const fileStat = await lstat(change.resolvedTarget);
+
+        if (!fileStat.isFile()) {
+          rollbackFailures.push(change.agentName);
+          continue;
+        }
+
+        // Use the same atomic write mechanism as the forward path to avoid
+        // following a symlink that appeared between the check and write.
+        await writeFileAtomic(change.resolvedTarget, change.previousContent);
       }
 
       rolledBack.push(change.agentName);
@@ -601,32 +621,23 @@ const installOrUpdate = async (projectRoot: string, packageRoot: string): Promis
       const existingIndex = nextAgents.findIndex(
         (current) => current.targetPath === entry.targetPath,
       );
-      const existing = existingIndex === -1 ? null : nextAgents[existingIndex];
+      const owned = existingIndex !== -1;
+      const targetState = await inspectTargetState(resolvedTarget);
 
-      let targetExists = false;
-      let targetIsSymlink = false;
-
-      try {
-        const targetStat = await lstat(resolvedTarget);
-        targetExists = true;
-        targetIsSymlink = targetStat.isSymbolicLink();
-      } catch {
-        targetExists = false;
-        targetIsSymlink = false;
-      }
-
-      if (targetIsSymlink) {
-        skippedAgents.push({ agentName, reason: "target is a symlink" });
+      // Non-regular targets: skip, never overwrite.
+      if (targetState === "symlink" || targetState === "directory" || targetState === "other") {
+        skippedAgents.push({ agentName, reason: `target is ${targetState}` });
         continue;
       }
 
-      if (existing) {
-        const previousContent = await readFile(resolvedTarget);
+      if (owned) {
+        // Manifest-owned: update (or recreate if previously missing).
         const sourceContent = await readFile(resolvedSource);
+        const previousContent = targetState === "regular" ? await readFile(resolvedTarget) : null;
 
         appliedChanges.push({
           agentName,
-          action: "updated",
+          action: targetState === "missing" ? "installed" : "updated",
           resolvedTarget,
           previousContent,
         });
@@ -635,11 +646,13 @@ const installOrUpdate = async (projectRoot: string, packageRoot: string): Promis
         continue;
       }
 
-      if (targetExists) {
+      if (targetState === "regular") {
+        // Foreign file already exists — preserve it.
         skippedAgents.push({ agentName, reason: "foreign file already exists" });
         continue;
       }
 
+      // Missing and not owned — fresh install.
       const sourceContent = await readFile(resolvedSource);
 
       appliedChanges.push({
@@ -740,22 +753,20 @@ const status = async (projectRoot: string, packageRoot: string): Promise<void> =
   }
 
   for (const owned of manifest.agents) {
-    const basename = owned.targetPath.split("/").pop();
-    const agentName = isAgentName(basename)
-      ? basename
-      : ("unknown" as (typeof AGENT_NAMES)[number]);
+    const basename = owned.targetPath.split("/").pop() ?? "";
+    if (!isAgentName(basename)) continue;
 
     const resolvedTarget = resolveProjectPath(projectRoot, owned.targetPath);
     const targetState = await inspectTargetState(resolvedTarget);
 
     if (targetState === "missing") {
-      console.log(`agent-skills: ${agentName} missing`);
+      console.log(`agent-skills: ${basename} missing`);
       continue;
     }
 
     if (targetState !== "regular") {
       console.log(
-        `agent-skills: ${agentName} unsafe (${describeTargetState(targetState)}); not hashed`,
+        `agent-skills: ${basename} unsafe (${describeTargetState(targetState)}); not hashed`,
       );
       continue;
     }
@@ -763,9 +774,9 @@ const status = async (projectRoot: string, packageRoot: string): Promise<void> =
     const currentHash = await sha256(resolvedTarget);
 
     if (currentHash === owned.sha256) {
-      console.log(`agent-skills: ${agentName} installed`);
+      console.log(`agent-skills: ${basename} installed`);
     } else {
-      console.log(`agent-skills: ${agentName} stale`);
+      console.log(`agent-skills: ${basename} stale`);
     }
   }
 
@@ -839,22 +850,20 @@ const uninstall = async (projectRoot: string, packageRoot: string): Promise<void
   );
 
   for (const owned of manifest.agents) {
-    const basename = owned.targetPath.split("/").pop();
-    const agentName = isAgentName(basename)
-      ? basename
-      : ("unknown" as (typeof AGENT_NAMES)[number]);
+    const basename = owned.targetPath.split("/").pop() ?? "";
+    if (!isAgentName(basename)) continue;
 
     const resolvedTarget = resolveProjectPath(projectRoot, owned.targetPath);
     const targetState = await inspectTargetState(resolvedTarget);
 
     if (targetState === "missing") {
-      console.log(`agent-skills: skipped ${agentName} (already missing)`);
+      console.log(`agent-skills: skipped ${basename} (already missing)`);
       continue;
     }
 
     if (targetState !== "regular") {
       console.log(
-        `agent-skills: skipped ${agentName} (unsafe: ${describeTargetState(targetState)}); preserved`,
+        `agent-skills: skipped ${basename} (unsafe: ${describeTargetState(targetState)}); preserved`,
       );
       continue;
     }
@@ -862,11 +871,11 @@ const uninstall = async (projectRoot: string, packageRoot: string): Promise<void
     const currentHash = await sha256(resolvedTarget);
 
     if (currentHash !== owned.sha256) {
-      console.log(`agent-skills: removing ${agentName} (modified since install)`);
+      console.log(`agent-skills: removing ${basename} (modified since install)`);
     }
 
     await rm(resolvedTarget, { force: true });
-    console.log(`agent-skills: removed ${agentName}`);
+    console.log(`agent-skills: removed ${basename}`);
   }
 
   await rm(manifestPath, { force: true });
