@@ -20,7 +20,7 @@ Example:
 /skill:spec-driven-development
 ```
 
-The `using-agent-skills` meta-skill is injected at session start and helps route tasks to the appropriate skill.
+The `using-agent-skills` meta-skill is injected into the model-visible system prompt via Pi's `before_agent_start` event at the start of each agent run, and a user-visible notice is shown at session start. It helps route tasks to the appropriate skill.
 
 ### Prompt templates
 
@@ -36,7 +36,7 @@ Pi does not automatically install package agents into projects. The agent-delive
 
 ## Agent-delivery commands
 
-The agent-delivery extension manages this package's four agents in the current project. It writes to `<project>/.pi/agents/` and tracks ownership in `<project>/.pi/pi-agent-skills/manifest.json`.
+The agent-delivery extension manages this package's four agents in the current project. It writes to `<project>/.pi/agents/` and tracks ownership in `<project>/.pi/pi-agent-skills/manifest.json`. The `.pi` directory name is a fixed contract path for this package, not a rebranded Pi config directory.
 
 | Command                   | Behavior                                                         |
 | ------------------------- | ---------------------------------------------------------------- |
@@ -45,18 +45,26 @@ The agent-delivery extension manages this package's four agents in the current p
 | `/agent-skills:status`    | Report installed, stale, missing, and foreign agents (read-only) |
 | `/agent-skills:uninstall` | Remove only package-owned agents and the ownership manifest      |
 
+The manifest stores only relative paths: the package-relative source
+(`agents/<name>.md`) and the project-relative target
+(`.pi/agents/<name>.md`). Format version 2 is current; version 1 manifests are
+refused.
+
 Safety rules:
 
 - Foreign agent files with colliding names are never overwritten or deleted.
 - Foreign or malformed manifests are rejected without mutation.
 - Uninstall removes only files listed in a valid package-owned manifest.
+- Managed boundaries (`.pi`, `.pi/agents`, `.pi/pi-agent-skills`, `manifest.json`) are symlink-checked before any write.
+- Install and update are failure-safe: writes are atomic and a partial failure rolls back created and updated files.
+- Status and uninstall never follow symlinks: unsafe owned targets are reported or preserved instead of being hashed or deleted.
 - No files are written to global directories like `~/.pi/agent/agents/`.
 
 ## Non-portable hooks
 
 The files under `hooks/` are retained as Claude Code reference material. They are **not** functional Pi hooks. The SDD cache hooks depend on Claude Code tool names (`WebFetch`, `Read`, `Edit`, `Write`) and event types (`PreToolUse`, `PostToolUse`). The simplify-ignore behavior has similar Claude Code-only limitations.
 
-The Pi session-start extension partially covers the portable session-start behavior by injecting the `using-agent-skills` context, but it does not implement SDD caching or simplify-ignore.
+The Pi session-start extension covers the portable session-start behavior by injecting the `using-agent-skills` content into the model-visible system prompt through `before_agent_start`; it does not implement SDD caching or simplify-ignore.
 
 ## pi-setup collision follow-up
 

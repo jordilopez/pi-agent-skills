@@ -79,7 +79,7 @@ The four read-only agent definitions are retained as source files under `agents/
 - `test-engineer.md`
 - `web-performance-auditor.md`
 
-The session-start extension is auto-loaded by Pi and exposes the `using-agent-skills` meta-skill context at session start. The agent-delivery extension provides explicit project-local commands for installing those four agents when they are needed.
+The session-start extension is auto-loaded by Pi. It registers a `before_agent_start` handler that injects the full `using-agent-skills` meta-skill content into the model-visible system prompt, and reports a user-visible notice at session start. The agent-delivery extension provides explicit project-local commands for installing those four agents when they are needed.
 
 The seven shared reference checklists remain under `references/` and are used by the unchanged skills through relative links. The original Claude Code hooks remain under `hooks/` as reference artifacts only.
 
@@ -108,15 +108,24 @@ Ownership is tracked in:
 <project>/.pi/pi-agent-skills/manifest.json
 ```
 
+The manifest stores relative paths only: the package-relative source
+(`agents/<name>.md`) and the project-relative target (`.pi/agents/<name>.md`).
+Absolute paths, traversal segments, duplicates, and unexpected agent names are
+rejected. Format version 2 is current; format version 1 manifests are refused
+with a migration error. The `.pi` directory name is a fixed contract path for
+this package, not a rebranded Pi config directory.
+
 The behavior is deliberately ownership-aware:
 
 - `install` creates missing package-owned agents.
 - `update` refreshes every manifest-owned agent, even when its local contents have been modified, and creates missing agents when there is no collision.
-- `status` reports installed, stale, missing, and foreign files without mutating the project.
-- `uninstall` removes every manifest-owned agent regardless of local modification, reports modified files before removal, and then removes the ownership manifest.
+- `status` reports installed, stale, missing, and foreign files without mutating the project. Owned targets replaced by a symlink or other non-regular file are reported as unsafe and never hashed through.
+- `uninstall` removes every manifest-owned regular file regardless of local modification, reports modified files before removal, and then removes the ownership manifest. Owned targets replaced by a symlink or other non-regular file are skipped and preserved.
 - Foreign agent files, including uncolliding files and files with colliding names, are preserved and never overwritten or deleted.
 - Malformed, foreign, or duplicate ownership manifests are refused without mutation.
 - Manifest traversal paths, absolute paths outside the project, unsafe symlinks, and non-regular-file targets are rejected without mutation.
+- Managed boundaries are symlink-checked before any write: `.pi`, `.pi/agents`, `.pi/pi-agent-skills`, and `manifest.json` must not be symlinks.
+- Install and update are failure-safe: agent files and the manifest are written atomically, and a partial failure rolls back created files (removed) and updated files (restored) before reporting what succeeded, what was rolled back, and what was left untouched.
 
 ## Coexistence guarantees
 

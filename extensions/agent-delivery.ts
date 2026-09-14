@@ -36,6 +36,11 @@ type TargetState = "missing" | "symlink" | "directory" | "regular" | "other";
 
 const FORMAT_VERSION = 2;
 const PACKAGE_NAME = "agent-skills-pi";
+// Contract paths are intentionally fixed to `.pi` as required by SPEC.md; this
+// package's public manifest/agent layout must not change. Pi exposes
+// `CONFIG_DIR_NAME` for rebranded distributions, so a rebranded Pi install may
+// look elsewhere; this package deliberately keeps `.pi` and does not follow a
+// rebranded config directory unless the specification is amended.
 const MANIFEST_DIR = ".pi/pi-agent-skills";
 const MANIFEST_FILE = "manifest.json";
 const PI_DIR = ".pi";
