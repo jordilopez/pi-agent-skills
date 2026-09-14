@@ -36,7 +36,7 @@ Pi does not automatically install package agents into projects. The agent-delive
 
 ## Agent-delivery commands
 
-The agent-delivery extension manages this package's four agents in the current project. It writes to `<project>/.pi/agents/` and tracks ownership in `<project>/.pi/pi-agent-skills/manifest.json`. The `.pi` directory name is a fixed contract path for this package, not a rebranded Pi config directory.
+The agent-delivery extension manages this package's four agents in the current project. In a Pi session **within the target project**, type any of these slash commands:
 
 | Command                   | Behavior                                                         |
 | ------------------------- | ---------------------------------------------------------------- |
@@ -45,12 +45,9 @@ The agent-delivery extension manages this package's four agents in the current p
 | `/agent-skills:status`    | Report installed, stale, missing, and foreign agents (read-only) |
 | `/agent-skills:uninstall` | Remove only package-owned agents and the ownership manifest      |
 
-The manifest stores only relative paths: the package-relative source
-(`agents/<name>.md`) and the project-relative target
-(`.pi/agents/<name>.md`). Format version 2 is current; version 1 manifests are
-refused.
+Agents are written to `<project>/.pi/agents/` — they are **not made globally available**. Ownership is tracked in `<project>/.pi/pi-agent-skills/manifest.json`. The manifest stores only relative paths: the package-relative source (`agents/<name>.md`) and the project-relative target (`.pi/agents/<name>.md`). Format version 2 is current; version 1 manifests are refused.
 
-Safety rules:
+### Safety rules
 
 - Foreign agent files with colliding names are never overwritten or deleted.
 - Foreign or malformed manifests are rejected without mutation.

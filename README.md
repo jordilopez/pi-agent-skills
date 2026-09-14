@@ -93,7 +93,7 @@ The seven shared reference checklists remain under `references/` and are used by
 
 Pi does not discover project agents from this package's resource manifest. The agent-delivery extension therefore installs only this package's four agents into a project when explicitly requested.
 
-Run these commands in the target project:
+In a Pi session **within the target project**, type any of these slash commands:
 
 ```text
 /agent-skills:install
@@ -102,7 +102,7 @@ Run these commands in the target project:
 /agent-skills:uninstall
 ```
 
-The commands use the current project working directory. Delivered agents are written to:
+Agents are installed **locally** into the project's `.pi/agents/` directory — they are not made globally available:
 
 ```text
 <project>/.pi/agents/
