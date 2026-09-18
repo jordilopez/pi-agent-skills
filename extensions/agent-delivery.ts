@@ -230,7 +230,7 @@ const validateOwnedAgentEntry = (
 };
 
 const resolvePackageRoot = (): string => {
-  const compiledPackageCandidate = dirname(fileURLToPath(new URL("..", import.meta.url)));
+  const compiledPackageCandidate = fileURLToPath(new URL("..", import.meta.url));
   const candidatePackageJson = join(compiledPackageCandidate, "package.json");
 
   try {
