@@ -1,0 +1,94 @@
+name: Dependabot auto-merge
+
+# Queues non-major Dependabot PRs for auto-merge after every other check on
+# the PR has concluded successfully.
+#
+# Why the wait loop: GitHub auto-merge only waits for *required* status checks
+# (docs: "Auto-merge merges a pull request automatically after all required
+# reviews and status checks pass"). This repo intentionally has no required
+# checks, so the workflow polls the PR's remaining check runs itself and only
+# queues the merge once they are all green. It excludes its own check run
+# (this workflow is one of the runs it would otherwise wait on).
+#
+# - Dependency review agency: security-update PRs are covered implicitly —
+#   Dependabot security bumps are usually semver minor/patch, which pass the
+#   gate. A security bump that crosses a major boundary stays manual.
+# - Majors are covered by the existing .github/dependabot.yml grouping: they
+#   are ungrouped and read `update-type: version-update:semver-major`.
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: dependabot-auto-merge-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  dependabot-auto-merge:
+    name: dependabot-auto-merge
+    runs-on: ubuntu-latest
+    if: github.actor == 'dependabot[bot]'
+    steps:
+      - name: Fetch Dependabot metadata
+        id: metadata
+        uses: dependabot/fetch-metadata@v3
+
+      - name: Skip major updates
+        if: steps.metadata.outputs.update-type == 'version-update:semver-major'
+        run: |
+          echo "update-type: version-update:semver-major — not auto-mergeable. Leaving PR for manual review."
+
+      - name: Wait for other checks to pass
+        id: wait
+        if: |
+          steps.metadata.outputs.update-type == 'version-update:semver-minor' ||
+          steps.metadata.outputs.update-type == 'version-update:semver-patch'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_URL: ${{ github.event.pull_request.html_url }}
+          OWN_CHECK_NAME: dependabot-auto-merge
+        run: |
+          set -euo pipefail
+          deadline=$(( $(date +%s) + 900 ))
+          while :; do
+            rollup="$(gh pr view "$PR_URL" --json statusCheckRollup \
+              -q '[.statusCheckRollup[] | select(.__typename == "CheckRun" and .name != env.OWN_CHECK_NAME)]')"
+            total="$(printf '%s' "$rollup" | jq 'length')"
+            incomplete="$(printf '%s' "$rollup" | jq '[.[] | select(.status != "COMPLETED")] | length')"
+            failed="$(printf '%s' "$rollup" | jq \
+              '[.[] | select(.status == "COMPLETED" and .conclusion != "SUCCESS")] | length')"
+            echo "checks: total=$total incomplete=$incomplete failed=$failed"
+
+            if [ "$failed" -gt 0 ]; then
+              printf '%s\n' "$rollup" | jq -r \
+                '.[] | select(.status == "COMPLETED" and .conclusion != "SUCCESS")
+                 | "failing check: \(.name) (\(.conclusion))"'
+              exit 1
+            fi
+            if [ "$incomplete" -eq 0 ]; then
+              break
+            fi
+            if [ "$(date +%s)" -ge "$deadline" ]; then
+              echo "Timed out waiting for other checks. Dependabot will retrigger on the next synchronize."
+              exit 1
+            fi
+            sleep 15
+          done
+
+      - name: Queue auto-merge
+        if: steps.wait.outcome == 'success'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_URL: ${{ github.event.pull_request.html_url }}
+        run: |
+          set -uo pipefail
+          if gh pr merge --auto --squash "$PR_URL"; then
+            echo "Auto-merge queued (squash)."
+          else
+            echo "Auto-merge could not be queued (likely already queued or PR merged just now; ignoring)."
+          fi
