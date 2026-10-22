@@ -1,0 +1,31 @@
+name: Dependency Review
+
+# Reviews dependency changes on every PR (including Dependabot) against
+# high-or-worse security advisories. Runs on every PR rather than only
+# manifest PRs so its check run always exists — the Dependabot auto-merge
+# workflow waits on this check before queueing a merge, so a high-severity
+# advisory blocks auto-merge. The action exits quickly on PRs with no
+# dependency changes.
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: dependency-review-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  dependency-review:
+    name: dependency-review
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Review dependencies
+        uses: actions/dependency-review-action@v5
+        with:
+          fail-on-severity: high
