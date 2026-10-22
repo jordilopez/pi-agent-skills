@@ -565,6 +565,41 @@ const makeNotify = (ctx: unknown): Notify => {
   return (message: string) => process.stderr.write(`agent-skills: ${message}\n`);
 };
 
+/**
+ * Batch notify helper. Pi's TUI `showStatus()` deliberately dedupes
+ * back-to-back info-level notifications (see interactive-mode.js showStatus:
+ * "we update the previous status line instead of appending new ones to avoid
+ * log spam"), so calling {@link Notify} once per agent would collapse N
+ * messages into the last one. Each command collects its per-agent output via
+ * {@link BatchedNotify.add} (newline-separated), then calls
+ * {@link BatchedNotify.flush} to emit one notify. Any line added with severity
+ * "warn" or "error" escalates the single notification's level so the user
+ * sees the batch as needing attention. flush() is a no-op when no lines were
+ * added, so commands with empty output stay silent.
+ */
+type BatchedNotify = {
+  add: (line: string, severity?: NotifyLevel) => void;
+  flush: () => void;
+};
+
+const createBatchedNotify = (notify: Notify): BatchedNotify => {
+  const lines: string[] = [];
+  let level: NotifyLevel = "info";
+  return {
+    add(line: string, severity: NotifyLevel = "info"): void {
+      lines.push(line);
+      if (severity !== "info") {
+        level = severity;
+      }
+    },
+    flush(): void {
+      if (lines.length > 0) {
+        notify(lines.join("\n"), level);
+      }
+    },
+  };
+};
+
 const installOrUpdate = async (
   projectRoot: string,
   packageRoot: string,
@@ -701,13 +736,14 @@ const installOrUpdate = async (
     throw new Error(describeInstallFailure(error, appliedChanges, skippedAgents, rollback));
   }
 
+  const batch = createBatchedNotify(notify);
   for (const change of appliedChanges) {
-    notify(`${change.action} ${change.agentName}`);
+    batch.add(`${change.action} ${change.agentName}`);
   }
-
   for (const skipped of skippedAgents) {
-    notify(`skipped ${skipped.agentName} (${skipped.reason})`, "warn");
+    batch.add(`skipped ${skipped.agentName} (${skipped.reason})`, "warn");
   }
+  batch.flush();
 };
 
 const inspectTargetState = async (resolvedTarget: string): Promise<TargetState> => {
@@ -774,6 +810,7 @@ const status = async (projectRoot: string, packageRoot: string, notify: Notify):
     return;
   }
 
+  const batch = createBatchedNotify(notify);
   for (const owned of manifest.agents) {
     const basename = owned.targetPath.split("/").pop() ?? "";
     if (!isAgentName(basename)) continue;
@@ -782,21 +819,21 @@ const status = async (projectRoot: string, packageRoot: string, notify: Notify):
     const targetState = await inspectTargetState(resolvedTarget);
 
     if (targetState === "missing") {
-      notify(`${basename} missing`, "warn");
+      batch.add(`${basename} missing`, "warn");
       continue;
     }
 
     if (targetState !== "regular") {
-      notify(`${basename} unsafe (${describeTargetState(targetState)}); not hashed`, "warn");
+      batch.add(`${basename} unsafe (${describeTargetState(targetState)}); not hashed`, "warn");
       continue;
     }
 
     const currentHash = await sha256(resolvedTarget);
 
     if (currentHash === owned.sha256) {
-      notify(`${basename} installed`);
+      batch.add(`${basename} installed`);
     } else {
-      notify(`${basename} stale`, "warn");
+      batch.add(`${basename} stale`, "warn");
     }
   }
 
@@ -823,9 +860,9 @@ const status = async (projectRoot: string, packageRoot: string, notify: Notify):
         const entryStat = await lstat(absoluteEntry);
 
         if (entryStat.isFile()) {
-          notify(`foreign file ${entry}`, "warn");
+          batch.add(`foreign file ${entry}`, "warn");
         } else if (entryStat.isSymbolicLink()) {
-          notify(`foreign symlink ${entry}`, "warn");
+          batch.add(`foreign symlink ${entry}`, "warn");
         }
       } catch {
         // Ignore inaccessible entries.
@@ -834,6 +871,8 @@ const status = async (projectRoot: string, packageRoot: string, notify: Notify):
   } catch {
     // Directory may not exist yet.
   }
+
+  batch.flush();
 };
 
 const uninstall = async (
@@ -873,6 +912,7 @@ const uninstall = async (
     "Managed agents directory",
   );
 
+  const batch = createBatchedNotify(notify);
   for (const owned of manifest.agents) {
     const basename = owned.targetPath.split("/").pop() ?? "";
     if (!isAgentName(basename)) continue;
@@ -881,12 +921,12 @@ const uninstall = async (
     const targetState = await inspectTargetState(resolvedTarget);
 
     if (targetState === "missing") {
-      notify(`skipped ${basename} (already missing)`);
+      batch.add(`skipped ${basename} (already missing)`);
       continue;
     }
 
     if (targetState !== "regular") {
-      notify(
+      batch.add(
         `skipped ${basename} (unsafe: ${describeTargetState(targetState)}); preserved`,
         "warn",
       );
@@ -896,15 +936,16 @@ const uninstall = async (
     const currentHash = await sha256(resolvedTarget);
 
     if (currentHash !== owned.sha256) {
-      notify(`removing ${basename} (modified since install)`);
+      batch.add(`removing ${basename} (modified since install)`, "warn");
     }
 
     await rm(resolvedTarget, { force: true });
-    notify(`removed ${basename}`);
+    batch.add(`removed ${basename}`);
   }
 
   await rm(manifestPath, { force: true });
-  notify("manifest removed.");
+  batch.add("manifest removed.");
+  batch.flush();
 };
 
 // Reusable command-context helper: resolves project root from Pi's cwd or process.cwd().
