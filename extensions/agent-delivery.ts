@@ -547,7 +547,29 @@ const describeInstallFailure = (
   return parts.join("; ");
 };
 
-const installOrUpdate = async (projectRoot: string, packageRoot: string): Promise<void> => {
+type NotifyLevel = "info" | "warn" | "error";
+type Notify = (message: string, level?: NotifyLevel) => void;
+
+/**
+ * Resolve the Pi UI notify channel from an unknown command handler context.
+ * Returns a no-op stderr writer when no UI is supplied (e.g. direct invocation
+ * in tests) so stray calls never bleed into the TUI's stdout.
+ */
+const makeNotify = (ctx: unknown): Notify => {
+  const ctxObj = ctx as
+    { ui?: { notify?: (message: string, level?: NotifyLevel) => void } } | undefined;
+  const target = ctxObj?.ui?.notify;
+  if (typeof target === "function") {
+    return (message: string, level: NotifyLevel = "info") => target(message, level);
+  }
+  return (message: string) => process.stderr.write(`agent-skills: ${message}\n`);
+};
+
+const installOrUpdate = async (
+  projectRoot: string,
+  packageRoot: string,
+  notify: Notify,
+): Promise<void> => {
   const packageVersion = readPackageVersion(packageRoot);
   const sourceDir = join(packageRoot, SOURCE_AGENTS_DIR);
 
@@ -680,11 +702,11 @@ const installOrUpdate = async (projectRoot: string, packageRoot: string): Promis
   }
 
   for (const change of appliedChanges) {
-    console.log(`agent-skills: ${change.action} ${change.agentName}`);
+    notify(`${change.action} ${change.agentName}`);
   }
 
   for (const skipped of skippedAgents) {
-    console.log(`agent-skills: skipped ${skipped.agentName} (${skipped.reason})`);
+    notify(`skipped ${skipped.agentName} (${skipped.reason})`, "warn");
   }
 };
 
@@ -725,7 +747,7 @@ const describeTargetState = (state: TargetState): string => {
   }
 };
 
-const status = async (projectRoot: string, packageRoot: string): Promise<void> => {
+const status = async (projectRoot: string, packageRoot: string, notify: Notify): Promise<void> => {
   const manifestPath = resolveManifestPath(projectRoot);
   let manifest: OwnershipManifest | null = null;
 
@@ -735,7 +757,7 @@ const status = async (projectRoot: string, packageRoot: string): Promise<void> =
     const message = error instanceof Error ? error.message : String(error);
 
     if (message.includes("Foreign") || message.includes("foreign")) {
-      console.log("agent-skills: foreign manifest detected; skipping status report.");
+      notify("foreign manifest detected; skipping status report.", "warn");
       return;
     }
 
@@ -743,12 +765,12 @@ const status = async (projectRoot: string, packageRoot: string): Promise<void> =
   }
 
   if (manifest === null) {
-    console.log("agent-skills: not installed in this project.");
+    notify("not installed in this project.");
     return;
   }
 
   if (manifest.packageName !== PACKAGE_NAME) {
-    console.log("agent-skills: foreign manifest detected; skipping status report.");
+    notify("foreign manifest detected; skipping status report.", "warn");
     return;
   }
 
@@ -760,23 +782,21 @@ const status = async (projectRoot: string, packageRoot: string): Promise<void> =
     const targetState = await inspectTargetState(resolvedTarget);
 
     if (targetState === "missing") {
-      console.log(`agent-skills: ${basename} missing`);
+      notify(`${basename} missing`, "warn");
       continue;
     }
 
     if (targetState !== "regular") {
-      console.log(
-        `agent-skills: ${basename} unsafe (${describeTargetState(targetState)}); not hashed`,
-      );
+      notify(`${basename} unsafe (${describeTargetState(targetState)}); not hashed`, "warn");
       continue;
     }
 
     const currentHash = await sha256(resolvedTarget);
 
     if (currentHash === owned.sha256) {
-      console.log(`agent-skills: ${basename} installed`);
+      notify(`${basename} installed`);
     } else {
-      console.log(`agent-skills: ${basename} stale`);
+      notify(`${basename} stale`, "warn");
     }
   }
 
@@ -803,9 +823,9 @@ const status = async (projectRoot: string, packageRoot: string): Promise<void> =
         const entryStat = await lstat(absoluteEntry);
 
         if (entryStat.isFile()) {
-          console.log(`agent-skills: foreign file ${entry}`);
+          notify(`foreign file ${entry}`, "warn");
         } else if (entryStat.isSymbolicLink()) {
-          console.log(`agent-skills: foreign symlink ${entry}`);
+          notify(`foreign symlink ${entry}`, "warn");
         }
       } catch {
         // Ignore inaccessible entries.
@@ -816,7 +836,11 @@ const status = async (projectRoot: string, packageRoot: string): Promise<void> =
   }
 };
 
-const uninstall = async (projectRoot: string, packageRoot: string): Promise<void> => {
+const uninstall = async (
+  projectRoot: string,
+  packageRoot: string,
+  notify: Notify,
+): Promise<void> => {
   const manifestPath = resolveManifestPath(projectRoot);
   let manifest: OwnershipManifest | null = null;
 
@@ -826,7 +850,7 @@ const uninstall = async (projectRoot: string, packageRoot: string): Promise<void
     const message = error instanceof Error ? error.message : String(error);
 
     if (message.includes("Foreign") || message.includes("foreign")) {
-      console.log("agent-skills: foreign manifest detected; refusing to uninstall.");
+      notify("foreign manifest detected; refusing to uninstall.", "warn");
       return;
     }
 
@@ -834,12 +858,12 @@ const uninstall = async (projectRoot: string, packageRoot: string): Promise<void
   }
 
   if (manifest === null) {
-    console.log("agent-skills: nothing to uninstall (no manifest found).");
+    notify("nothing to uninstall (no manifest found).");
     return;
   }
 
   if (manifest.packageName !== PACKAGE_NAME) {
-    console.log("agent-skills: foreign manifest detected; refusing to uninstall.");
+    notify("foreign manifest detected; refusing to uninstall.", "warn");
     return;
   }
 
@@ -857,13 +881,14 @@ const uninstall = async (projectRoot: string, packageRoot: string): Promise<void
     const targetState = await inspectTargetState(resolvedTarget);
 
     if (targetState === "missing") {
-      console.log(`agent-skills: skipped ${basename} (already missing)`);
+      notify(`skipped ${basename} (already missing)`);
       continue;
     }
 
     if (targetState !== "regular") {
-      console.log(
-        `agent-skills: skipped ${basename} (unsafe: ${describeTargetState(targetState)}); preserved`,
+      notify(
+        `skipped ${basename} (unsafe: ${describeTargetState(targetState)}); preserved`,
+        "warn",
       );
       continue;
     }
@@ -871,15 +896,15 @@ const uninstall = async (projectRoot: string, packageRoot: string): Promise<void
     const currentHash = await sha256(resolvedTarget);
 
     if (currentHash !== owned.sha256) {
-      console.log(`agent-skills: removing ${basename} (modified since install)`);
+      notify(`removing ${basename} (modified since install)`);
     }
 
     await rm(resolvedTarget, { force: true });
-    console.log(`agent-skills: removed ${basename}`);
+    notify(`removed ${basename}`);
   }
 
   await rm(manifestPath, { force: true });
-  console.log("agent-skills: manifest removed.");
+  notify("manifest removed.");
 };
 
 // Reusable command-context helper: resolves project root from Pi's cwd or process.cwd().
@@ -897,28 +922,32 @@ const registerAgentDelivery = (pi: ExtensionAPI): void => {
   pi.registerCommand("agent-skills:install", {
     description: "Install this package's owned agents into the current project.",
     handler: async (_args, ctx) => {
-      await installOrUpdate(resolveProjectRootForCommand(ctx), resolvePackageRoot());
+      const notify = makeNotify(ctx);
+      await installOrUpdate(resolveProjectRootForCommand(ctx), resolvePackageRoot(), notify);
     },
   });
 
   pi.registerCommand("agent-skills:update", {
     description: "Refresh this package's owned agents in the current project.",
     handler: async (_args, ctx) => {
-      await installOrUpdate(resolveProjectRootForCommand(ctx), resolvePackageRoot());
+      const notify = makeNotify(ctx);
+      await installOrUpdate(resolveProjectRootForCommand(ctx), resolvePackageRoot(), notify);
     },
   });
 
   pi.registerCommand("agent-skills:status", {
     description: "Show owned agent status for the current project.",
     handler: async (_args, ctx) => {
-      await status(resolveProjectRootForCommand(ctx), resolvePackageRoot());
+      const notify = makeNotify(ctx);
+      await status(resolveProjectRootForCommand(ctx), resolvePackageRoot(), notify);
     },
   });
 
   pi.registerCommand("agent-skills:uninstall", {
     description: "Remove this package's owned agents and manifest from the current project.",
     handler: async (_args, ctx) => {
-      await uninstall(resolveProjectRootForCommand(ctx), resolvePackageRoot());
+      const notify = makeNotify(ctx);
+      await uninstall(resolveProjectRootForCommand(ctx), resolvePackageRoot(), notify);
     },
   });
 };
