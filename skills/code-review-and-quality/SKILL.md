@@ -85,6 +85,31 @@ For detailed profiling and optimization, see `performance-optimization`. Does th
 - Any missing pagination on list endpoints?
 - Any large objects created in hot paths?
 
+## Architectural Pattern Adoption
+
+When a review comment asks "should this be hexagonal?", the default answer is **no**. Layered architecture pays off only when the codebase already shows the preconditions. Otherwise it is over-engineering — and `code-simplification` will rightly push back later.
+
+**Default-deny — every suggestion must pass all of these checks:**
+
+1. **Identifiable domain with logic distinct from IO** — CRUD-shaped projects don't need layers.
+2. **≥2 infrastructure adapters that exist or are imminent** — DB, HTTP, queue, third-party API, clock, filesystem. A port around one concrete is gratuitous.
+3. **Tests exist or are planned that benefit from substituting infrastructure** — mock-heavy test layer, fixture churn, slow IO in test suite.
+4. **Discipline about dependency direction already partial** in the codebase, or a test suite enforcing it.
+5. **The diff has architectural weight** — touches multiple files across boundary lines, repeats an existing leaky access pattern, or introduces a cross-cutting concern. A 50-line bugfix or single-file feature is not enough.
+6. **The refactor is genuinely smaller than the pain it removes** — layering adds files and indirections before it removes anything; a "small patterns refactor" is rarely small.
+
+Any check that fails → no recommendation. **Silence is a valid outcome; do not fill it.**
+
+When this turns into a Critical / Required finding: the diff itself *violates* a boundary the codebase has already established (e.g., a new infrastructure import inside a domain module, domain types leaking into an infrastructure API). That is a real bug, not a layering suggestion.
+
+**Per-pattern preconditions:**
+
+| Pattern | Adds on top of the default-deny list | Do not suggest when |
+|---|---|---|
+| **Hexagonal / Ports & Adapters** | Tests that benefit from infra substitution | Only one IO path; codebase < ~500 LOC |
+| **Onion** | Dep-direction discipline already partial | CRUD-shaped project |
+| **Clean** | Same as Onion, plus ≥2 delivery mechanisms (CLI, web, batch) reusing the same rules | One delivery surface and no second planned |
+
 ## Structural Remedies
 
 When you flag a structural problem, propose the move — not just the problem. A review that only says "this is complex" leaves the author guessing. Reach for a named restructuring:
