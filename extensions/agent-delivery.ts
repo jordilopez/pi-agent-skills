@@ -736,12 +736,17 @@ const installOrUpdate = async (
     throw new Error(describeInstallFailure(error, appliedChanges, skippedAgents, rollback));
   }
 
+  // One notify() carrying every agent name, mirroring `agent-skills:status`
+  // (`<name> <state>` per line) so the two commands read the same way. The
+  // single call matters: pi's `showStatus()` dedupes consecutive info-level
+  // notifications into the last message, so per-agent notify calls would
+  // collapse and hide all but one line.
   const batch = createBatchedNotify(notify);
   for (const change of appliedChanges) {
-    batch.add(`${change.action} ${change.agentName}`);
+    batch.add(`${change.agentName} ${change.action}`);
   }
   for (const skipped of skippedAgents) {
-    batch.add(`skipped ${skipped.agentName} (${skipped.reason})`, "warn");
+    batch.add(`${skipped.agentName} skipped (${skipped.reason})`, "warn");
   }
   batch.flush();
 };
@@ -912,6 +917,8 @@ const uninstall = async (
     "Managed agents directory",
   );
 
+  // See comment in installOrUpdate for why these go through one batched
+  // notify and use `<name> <state>` lines.
   const batch = createBatchedNotify(notify);
   for (const owned of manifest.agents) {
     const basename = owned.targetPath.split("/").pop() ?? "";
@@ -921,13 +928,13 @@ const uninstall = async (
     const targetState = await inspectTargetState(resolvedTarget);
 
     if (targetState === "missing") {
-      batch.add(`skipped ${basename} (already missing)`);
+      batch.add(`${basename} skipped (already missing)`);
       continue;
     }
 
     if (targetState !== "regular") {
       batch.add(
-        `skipped ${basename} (unsafe: ${describeTargetState(targetState)}); preserved`,
+        `${basename} skipped (unsafe: ${describeTargetState(targetState)}); preserved`,
         "warn",
       );
       continue;
@@ -936,11 +943,12 @@ const uninstall = async (
     const currentHash = await sha256(resolvedTarget);
 
     if (currentHash !== owned.sha256) {
-      batch.add(`removing ${basename} (modified since install)`, "warn");
+      batch.add(`${basename} removed (modified since install)`, "warn");
+    } else {
+      batch.add(`${basename} removed`);
     }
 
     await rm(resolvedTarget, { force: true });
-    batch.add(`removed ${basename}`);
   }
 
   await rm(manifestPath, { force: true });
