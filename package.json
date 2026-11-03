@@ -15,7 +15,8 @@
       "./prompts"
     ],
     "extensions": [
-      "./extensions"
+      "./extensions/agent-delivery.ts",
+      "./extensions/session-start.ts"
     ]
   },
   "files": [
