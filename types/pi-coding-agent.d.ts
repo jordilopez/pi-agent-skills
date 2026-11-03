@@ -9,6 +9,13 @@
 
 export type ExtensionCommandContext = {
   cwd: string;
+  mode?: string;
+  hasUI?: boolean;
+  ui?: {
+    select?: (title: string, options: string[]) => Promise<string | undefined>;
+    notify?: (message: string, type?: string) => void;
+    [key: string]: unknown;
+  };
 };
 
 /** Event shape for the before_agent_start lifecycle handler. */
@@ -48,4 +55,7 @@ export type ExtensionAPI = {
       handler?: (args: unknown, ctx: ExtensionCommandContext) => unknown | Promise<unknown>;
     },
   ) => void;
+  getSettings: () => {
+    packages?: Array<string | { source?: string }>;
+  };
 };

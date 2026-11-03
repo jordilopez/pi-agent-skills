@@ -76,7 +76,7 @@ The upstream command name `planning` is preserved as `/planning`; this package d
 
 ### Agents (4)
 
-The four read-only agent definitions are retained as source files under `agents/` and can be delivered to projects via `agent-skills:install`.
+The four read-only agent definitions are retained as canonical source files under `agents/`, with declarative per-format frontmatter patches under `agents/overrides/`. They are delivered to projects via `agent-skills:install` in the format required by the project's subagent orchestrator.
 
 | Agent                     | Purpose                                                                                           |
 | ------------------------- | ------------------------------------------------------------------------------------------------- |
@@ -91,46 +91,68 @@ The seven shared reference checklists remain under `references/` and are used by
 
 ## Project-local agent delivery
 
-Pi does not discover project agents from this package's resource manifest. The agent-delivery extension therefore installs only this package's four agents into a project when explicitly requested.
+Pi does not discover project agents from this package's resource manifest. The agent-delivery extension therefore installs only this package's four agents into a project when explicitly requested, converting one canonical source into the format required by the project's subagent orchestrator.
 
 In a Pi session **within the target project**, type any of these slash commands:
 
 ```text
-/agent-skills:install
-/agent-skills:update
+/agent-skills:install [format]
+/agent-skills:update [format]
 /agent-skills:status
 /agent-skills:uninstall
 ```
 
-Agents are installed **locally** into the project's `.pi/agents/` directory — they are not made globally available:
+`install` and `update` accept an optional `format` argument. `status` reads the format from the ownership manifest, and `uninstall` is format-agnostic (it removes exactly the target paths recorded in the manifest).
 
-```text
-<project>/.pi/agents/
-```
+### Supported formats
 
-Ownership is tracked in:
+| Format         | Target directory                        | Conversion                                                                                                     |
+| -------------- | --------------------------------------- | -------------------------------------------------------------------------------------------------------------- |
+| `tmux`         | `<project>/.pi/agents/`                 | Pass-through; the canonical frontmatter is installed unchanged.                                                |
+| `herdr`        | `<project>/.pi/herdr-subagents/agents/` | Remove `pane`; set `access: read` and a read-only `tools` list.                                                |
+| `pi-subagents` | `<project>/.pi/agents/`                 | Remove `pane` and `deny-tools`; set `acceptanceRole: read-only`, a read-only `tools` list, and context fields. |
 
-```text
-<project>/.pi/pi-agent-skills/manifest.json
-```
+The `agents/` directory holds the four canonical definitions. `agents/overrides/<format>.yaml` holds the declarative frontmatter patch for each format. Adding an orchestrator adds one override file and one entry in the detection table — no new conversion code.
 
-The manifest stores relative paths only: the package-relative source
-(`agents/<name>.md`) and the project-relative target (`.pi/agents/<name>.md`).
-Absolute paths, traversal segments, duplicates, and unexpected agent names are
-rejected. Format version 2 is current; format version 1 manifests are refused
-with a migration error. The `.pi` directory name is a fixed contract path for
-this package, not a rebranded Pi config directory.
+Every converted agent is read-only in every format. A conversion that would grant `write` or `edit` is rejected as a defect before anything is written.
+
+### Format selection
+
+Selection resolves in this order:
+
+1. The explicit `format` argument, which must be one of `tmux`, `herdr`, or `pi-subagents`.
+2. Automatic detection when exactly one recognized orchestrator package is configured in Pi's settings.
+3. An interactive prompt listing the supported formats, when Pi is running interactively and no format can be detected.
+4. Otherwise the command fails with a message naming the supported formats.
+
+Detection is a convenience, not a guess. When two or more recognized orchestrators are present the command falls through to the prompt or the explicit-argument requirement.
+
+| Package                              | Format         |
+| ------------------------------------ | -------------- |
+| `npm:@vanillagreen/pi-agents-tmux`   | `tmux`         |
+| `npm:@maxiaochao/pi-herdr-subagents` | `herdr`        |
+| `npm:pi-subagents`                   | `pi-subagents` |
+
+Recognizing a package identity does not install it. This package only emits orchestrator-compatible agent files; installing an orchestrator is the user's responsibility. This package never installs, invokes, or declares a dependency on any subagent orchestrator.
+
+### Ownership manifest
+
+Ownership is tracked in `<project>/.pi/pi-agent-skills/manifest.json`. The manifest stores relative paths only, the selected format, the package version, and a SHA-256 of the converted content that was installed. Absolute paths, traversal segments, duplicates, and unexpected agent names are rejected.
+
+Format version 3 is current and records the selected format. A version 2 manifest is read as `tmux` and upgraded to version 3 on the next successful install or update; no agent content is lost. A version 1 manifest is refused with a migration error. The `.pi` directory name is a fixed contract path for this package, not a rebranded Pi config directory.
 
 The behavior is deliberately ownership-aware:
 
 - `install` creates missing package-owned agents.
 - `update` refreshes every manifest-owned agent, even when its local contents have been modified, and creates missing agents when there is no collision.
-- `status` reports installed, stale, missing, and foreign files without mutating the project. Owned targets replaced by a symlink or other non-regular file are reported as unsafe and never hashed through.
-- `uninstall` removes every manifest-owned regular file regardless of local modification, reports modified files before removal, and then removes the ownership manifest. Owned targets replaced by a symlink or other non-regular file are skipped and preserved.
+- A project installs exactly one format at a time. Requesting a format that differs from the manifest's recorded format is refused without modifying any file; run `/agent-skills:uninstall` first, then install the new format.
+- `status` reports installed, stale, missing, and foreign files without mutating the project, using the format recorded in the manifest to locate the target directory. Owned targets replaced by a symlink or other non-regular file are reported as unsafe and never hashed through.
+- `uninstall` removes every manifest-owned regular file regardless of local modification, reports modified files before removal, and then removes the ownership manifest. Owned targets replaced by a symlink or other non-regular file are skipped and preserved. Uninstall does not require the format to be restated.
 - Foreign agent files, including uncolliding files and files with colliding names, are preserved and never overwritten or deleted.
 - Malformed, foreign, or duplicate ownership manifests are refused without mutation.
+- Conversion is validated against the selected format before writing, and a malformed override file or failed validation aborts the operation with rollback.
 - Manifest traversal paths, absolute paths outside the project, unsafe symlinks, and non-regular-file targets are rejected without mutation.
-- Managed boundaries are symlink-checked before any write: `.pi`, `.pi/agents`, `.pi/pi-agent-skills`, and `manifest.json` must not be symlinks.
+- Managed boundaries are symlink-checked before any write: `.pi`, the selected format's target directory, `.pi/pi-agent-skills`, and `manifest.json` must not be symlinks.
 - Install and update are failure-safe: agent files and the manifest are written atomically, and a partial failure rolls back created files (removed) and updated files (restored) before reporting what succeeded, what was rolled back, and what was left untouched.
 
 ## Coexistence guarantees
@@ -139,8 +161,8 @@ This package is designed to coexist with a project's existing Pi setup:
 
 - Skills stay in the installed package and are never copied into projects.
 - Prompt templates and other workflows stay in the installed package and are never copied into projects.
-- No files are written to `~/.pi/agent/agents/` or any other global agent directory.
-- Agent delivery touches only this package's four owned agent files under the target project's `.pi/agents/` directory.
+- No files are written to `~/.pi/agent/agents/` or `~/.pi/agent/herdr-subagents/`, or any other global agent directory.
+- Agent delivery touches only this package's four owned agent files under the selected format's target directory (`<project>/.pi/agents/` or `<project>/.pi/herdr-subagents/agents/`).
 - Foreign project agents are preserved, including uncolliding files and colliding filenames.
 - The package does not modify Pi itself.
 
@@ -150,7 +172,7 @@ The upstream source is [`addyosmani/agent-skills`](https://github.com/addyosmani
 
 - Skills, shared references, hooks, and their supporting files are verbatim imports from upstream.
 - Prompt templates are converted from the nine upstream TOML command files.
-- Agent definitions are converted from the four upstream agent definitions, with Pi-specific read-only frontmatter.
+- Agent definitions are converted from the four upstream agent definitions, with Pi-specific read-only frontmatter. `agents/overrides/` supplies the declarative per-format frontmatter patches used by agent delivery.
 - The unchanged skill links such as `../../references/definition-of-done.md` resolve from each skill directory to the sibling package-root `references/` directory.
 - `LICENSE` and `plugin.json` retain the upstream provenance metadata required by the port.
 

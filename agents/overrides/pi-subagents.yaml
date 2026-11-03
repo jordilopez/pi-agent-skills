@@ -1,0 +1,9 @@
+targetDir: .pi/agents
+frontmatter:
+  remove: [pane, deny-tools]
+  set:
+    tools: read, grep, find, ls, bash, contact_supervisor
+    acceptanceRole: read-only
+    inheritProjectContext: true
+    inheritSkills: false
+    systemPromptMode: replace

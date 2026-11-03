@@ -38,24 +38,28 @@ Pi does not automatically install package agents into projects. The agent-delive
 
 The agent-delivery extension manages this package's four agents in the current project. In a Pi session **within the target project**, type any of these slash commands:
 
-| Command                   | Behavior                                                         |
-| ------------------------- | ---------------------------------------------------------------- |
-| `/agent-skills:install`   | Install missing package-owned agents                             |
-| `/agent-skills:update`    | Refresh all owned agents to current package content              |
-| `/agent-skills:status`    | Report installed, stale, missing, and foreign agents (read-only) |
-| `/agent-skills:uninstall` | Remove only package-owned agents and the ownership manifest      |
+| Command                   | Behavior                                                              |
+| ------------------------- | --------------------------------------------------------------------- |
+| `/agent-skills:install`   | Install missing package-owned agents (optional `[format]`)            |
+| `/agent-skills:update`    | Refresh owned agents to current package content (optional `[format]`) |
+| `/agent-skills:status`    | Report installed, stale, missing, and foreign agents (read-only)      |
+| `/agent-skills:uninstall` | Remove only package-owned agents and the ownership manifest           |
 
-Agents are written to `<project>/.pi/agents/` — they are **not made globally available**. Ownership is tracked in `<project>/.pi/pi-agent-skills/manifest.json`. The manifest stores only relative paths: the package-relative source (`agents/<name>.md`) and the project-relative target (`.pi/agents/<name>.md`). Format version 2 is current; version 1 manifests are refused.
+Agents are converted from one canonical source in `agents/` into the format required by the project's subagent orchestrator. Supported formats are `tmux` (`.pi/agents/`), `herdr` (`.pi/herdr-subagents/agents/`), and `pi-subagents` (`.pi/agents/`). The declarative frontmatter patch for each format lives in `agents/overrides/<format>.yaml`.
+
+`install` and `update` accept an optional `format` argument and otherwise resolve the format by detection or interactive prompt. A project installs exactly one format at a time; switching formats requires `/agent-skills:uninstall` first. Every converted agent remains read-only.
+
+Ownership is tracked in `<project>/.pi/pi-agent-skills/manifest.json`. The manifest stores only relative paths, the selected format, the package version, and a SHA-256 of the converted content. Format version 3 is current; version 2 manifests are read as `tmux` and upgraded in place; version 1 manifests are refused.
 
 ### Safety rules
 
 - Foreign agent files with colliding names are never overwritten or deleted.
 - Foreign or malformed manifests are rejected without mutation.
 - Uninstall removes only files listed in a valid package-owned manifest.
-- Managed boundaries (`.pi`, `.pi/agents`, `.pi/pi-agent-skills`, `manifest.json`) are symlink-checked before any write.
+- Managed boundaries (`.pi`, the selected format's target directory, `.pi/pi-agent-skills`, `manifest.json`) are symlink-checked before any write.
 - Install and update are failure-safe: writes are atomic and a partial failure rolls back created and updated files.
 - Status and uninstall never follow symlinks: unsafe owned targets are reported or preserved instead of being hashed or deleted.
-- No files are written to global directories like `~/.pi/agent/agents/`.
+- No files are written to global directories like `~/.pi/agent/agents/` or `~/.pi/agent/herdr-subagents/`.
 
 ## Non-portable hooks
 

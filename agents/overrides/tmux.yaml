@@ -1,0 +1,4 @@
+targetDir: .pi/agents
+frontmatter:
+  remove: []
+  set: {}

@@ -23,8 +23,10 @@ full-repo port:
 - A Pi extension implementing the session-start context/meta-skill behavior
   that maps cleanly to Pi.
 - A Pi extension command interface that installs and manages this package's
-  four agents in a project-local `.pi/agents/` directory using an ownership
-  manifest, without overwriting unrelated agents.
+  four agents in a project-local directory using an ownership manifest,
+  without overwriting unrelated agents. The install command emits the agent
+  format required by the user's chosen subagent orchestrator (`tmux`, `herdr`,
+  or `pi-subagents`) from one canonical agent source.
 - The original Claude Code hook scripts and documentation, retained for
   reference and clearly marked as non-portable where they cannot map to Pi.
 
@@ -63,8 +65,11 @@ The distribution clarification is:
 - Pi-native resource types:
   - `skills/` for the 25 skills.
   - `prompts/` for converted commands.
-  - `agents/` for the four package-owned agent sources; Pi does not discover
-    these from the package manifest, so the extension delivers them to projects.
+  - `agents/` for the four package-owned canonical agent sources; Pi does not
+    discover these from the package manifest, so the extension delivers them
+    to projects.
+  - `agents/overrides/` for declarative per-orchestrator frontmatter patches
+    and target directories. These are data files, not executable code.
   - `extensions/` for session-start and project-local agent-delivery behavior.
 - TypeScript compiler for build and typecheck.
 - ESLint for linting authored TypeScript.
@@ -210,6 +215,9 @@ selected during implementation, but the following requirements are mandatory:
   relative links from the skills to resolve after installation.
 - The package does not depend on npm publication. Git installation is the
   supported distribution mechanism.
+- The `agents/` directory is included in the package files so that the
+  canonical agent sources and `agents/overrides/` are available after
+  installation.
 - The package does not use a post-install step that modifies Pi or rewrites
   imported skill content.
 
@@ -251,6 +259,10 @@ The target repository layout is:
       security-auditor.md
       test-engineer.md
       web-performance-auditor.md
+      overrides/
+        tmux.yaml
+        herdr.yaml
+        pi-subagents.yaml
     extensions/
       session-start.ts             Pi implementation of session-start injection
       agent-delivery.ts             Project-local agent install/update commands
@@ -296,10 +308,17 @@ The 25 skill names must be exactly:
 - `test-driven-development`
 - `using-agent-skills`
 
-The four `agents/` files are package-owned source definitions. They are not
-listed under `pi.agents` because Pi does not discover agents from a package
-manifest. The agent-delivery extension installs them into a project's
-`.pi/agents/` directory only when the user invokes its commands.
+The four `agents/` files are package-owned canonical source definitions. They
+are not listed under `pi.agents` because Pi does not discover agents from a
+package manifest. The agent-delivery extension converts and installs them into
+a project-local directory only when the user invokes its commands.
+
+The canonical source format is the tmux-format frontmatter already present in
+those four files (`pane: false`, `deny-tools: write, edit`). Per-orchestrator
+`agents/overrides/<format>.yaml` files declare the target directory and the
+frontmatter patch that adapts the canonical source to that orchestrator.
+Conversion is data-driven: adding an orchestrator adds one override file and
+must not require a change to the conversion algorithm.
 
 Every upstream `SKILL.md` must retain its original name, description,
 frontmatter, body, and links. The additional files under
@@ -368,8 +387,9 @@ under `agents/`:
 - `test-engineer`
 - `web-performance-auditor`
 
-Preserve each agent's body and instructions, adapting only the frontmatter and
-tool declarations required by Pi. Each converted agent must:
+Preserve each agent's body and instructions. The four files under `agents/`
+are the canonical source and use tmux-format frontmatter: `pane: false` and
+`deny-tools: write, edit`. Each canonical agent must:
 
 - Retain its upstream `name`.
 - Retain its upstream `description`.
@@ -377,6 +397,42 @@ tool declarations required by Pi. Each converted agent must:
 - Deny `write` and `edit` tools so it remains read-only.
 - Preserve the upstream review/audit behavior.
 - Not gain permission to modify repository files as part of the conversion.
+
+Delivery converts the canonical source into the format required by the user's
+chosen orchestrator. Conversion is declared by data, not by code. Each
+supported orchestrator has one override file under `agents/overrides/` that
+declares a target directory and a frontmatter patch:
+
+| Format | Target directory | Frontmatter patch |
+| --- | --- | --- |
+| `tmux` | `<project>/.pi/agents/` | Pass-through; the canonical frontmatter is installed unchanged. |
+| `herdr` | `<project>/.pi/herdr-subagents/agents/` | Remove `pane`. Set `access: read` and `tools: read, bash, grep, find, ls, codemode`. |
+| `pi-subagents` | `<project>/.pi/agents/` | Remove `pane` and `deny-tools`. Set `tools: read, grep, find, ls, bash, contact_supervisor`, `acceptanceRole: read-only`, `inheritProjectContext: true`, `inheritSkills: false`, `systemPromptMode: replace`. |
+
+An override file is a small declarative document, for example:
+
+    targetDir: .pi/herdr-subagents/agents
+    frontmatter:
+      remove: [pane]
+      set:
+        access: read
+        tools: read, bash, grep, find, ls, codemode
+
+The agent body below the frontmatter is preserved verbatim for every format.
+Only frontmatter is added, removed, or replaced.
+
+Every converted agent must remain read-only in every supported format. A
+conversion that would grant `write` or `edit` to a read-only agent is a defect,
+not a configuration choice.
+
+The `tmux` and `pi-subagents` formats share the target directory
+`<project>/.pi/agents/`. A project installs exactly one format at a time; the
+install command refuses to switch formats in place (see Project-local agent
+delivery).
+
+Adding a new orchestrator requires adding one `agents/overrides/<format>.yaml`
+file and one entry in the orchestrator detection table. It must not require a
+new conversion function.
 
 #### Hooks and extension
 
@@ -401,26 +457,89 @@ documentation as Claude-Code-only where applicable.
 
 The package must expose a namespaced extension command interface:
 
-    /agent-skills:install
-    /agent-skills:update
+    /agent-skills:install [format]
+    /agent-skills:update [format]
     /agent-skills:status
     /agent-skills:uninstall
 
 These commands manage only the four agents shipped by this repository. They
-must install them into `<project>/.pi/agents/` and store ownership metadata at
+must install them into the target directory declared by the selected
+orchestrator format and store ownership metadata at
 `<project>/.pi/pi-agent-skills/manifest.json`. The manifest records its format
-version, package name and version, each package-relative source path, each
-project-relative target path, and a SHA-256 content hash.
+version, package name and version, the selected orchestrator format, each
+package-relative source path, each project-relative target path, and a SHA-256
+content hash of the converted content that was installed.
+
+#### Format selection
+
+Supported formats are `tmux`, `herdr`, and `pi-subagents`. The install and
+update commands accept an optional positional `format` argument. Selection
+resolves in this order:
+
+1. An explicit `format` argument, which must be one of the supported formats.
+2. Automatic detection when exactly one recognized orchestrator package is
+   present in the active Pi package configuration.
+3. An interactive prompt listing the supported formats, when Pi is running
+   interactively and no format can be detected.
+4. Otherwise, the command fails with a message naming the supported formats and
+   stating that no orchestrator was detected.
+
+Recognition uses this mapping. Only these package identities may be recognized;
+the table is the single place in the extension that names an orchestrator.
+
+| Package | Format |
+| --- | --- |
+| `npm:@vanillagreen/pi-agents-tmux` | `tmux` |
+| `npm:@maxiaochao/pi-herdr-subagents` | `herdr` |
+| `npm:pi-subagents` | `pi-subagents` |
+
+Detection is a convenience, not a source of truth. When two or more recognized
+orchestrators are present, detection is ambiguous and must not guess; the
+command falls through to the prompt or to the explicit-argument requirement.
+
+Recognizing a package identity does not authorize installing it. This package
+emits orchestrator-compatible files only.
+
+#### Format switching
+
+A project installs exactly one format at a time. When a manifest exists whose
+recorded format differs from the requested format, install and update must
+refuse the operation and instruct the user to run `/agent-skills:uninstall`
+before installing the new format. The refusal must not modify any file. This
+matches the existing refusal behavior for foreign manifests and keeps each
+state change a single, reviewable operation.
+
+#### Ownership manifest
+
+The ownership manifest format version becomes `3`. A version `2` manifest is
+read as format `tmux` and is rewritten as version `3` on the next successful
+install or update; no agent content is lost. Version `1` remains unsupported
+and continues to require uninstall followed by install.
+
+#### Behavior
 
 Install and update must create missing package-owned agents, refresh agents
 listed in the manifest even when locally modified, skip and report foreign
 colliding files, update ownership only after successful operations, and be
-idempotent. Status must not mutate files and must report installed, missing,
-stale, and foreign/colliding entries. Uninstall may remove only manifest-owned
-agents and the package-owned manifest; it must never touch foreign agents,
-foreign manifests, global `~/.pi/agent/agents/`, workflows, skills, Pi itself,
-or other packages. Commands must fail clearly when no active project root is
-available.
+idempotent. Conversion must be deterministic: the same canonical source and
+override file must always produce byte-identical output.
+
+Install and update must validate each converted agent against the selected
+format before writing it, and must fail the operation, with rollback, when a
+converted agent does not satisfy that format's shape requirements. A malformed
+override file must fail the operation rather than install a partially
+converted agent.
+
+Status must not mutate files and must report installed, missing, stale, and
+foreign/colliding entries, using the format recorded in the manifest to locate
+the target directory. Uninstall may remove only manifest-owned agents and the
+package-owned manifest; it must never touch foreign agents, foreign manifests,
+global `~/.pi/agent/agents/` or `~/.pi/agent/herdr-subagents/`, workflows,
+skills, Pi itself, or other packages. Commands must fail clearly when no active
+project root is available.
+
+Uninstall must remain format-agnostic: it removes exactly the target paths
+recorded in the manifest and does not require the user to restate the format.
 
 The following behaviors are explicitly non-portable and are not to be
 pretended to be implemented by the Pi extension:
@@ -461,6 +580,12 @@ Conventions:
 - Do not run formatting over `skills/` or `references/`.
 - Keep frontmatter fields valid for Pi and use quoted values when YAML
   punctuation could be ambiguous.
+- Keep the orchestrator detection table as the only extension code that names a
+  specific orchestrator package.
+- Keep conversion rules in `agents/overrides/<format>.yaml` data files; do not
+  add per-orchestrator conversion functions.
+- Validate override files and converted agent output before any filesystem
+  mutation, and report a specific reason when validation fails.
 
 An illustrative Pi prompt-template style is:
 
@@ -507,14 +632,29 @@ The manual smoke check must confirm:
 - The nine prompt templates are registered.
 - The session-start extension loads without an error.
 - The four agent-delivery commands register and use the active project root.
-- Installing into a scratch project places only this package's agents in
-  `<project>/.pi/agents/` and records ownership in the package manifest.
+- Installing into a scratch project places only this package's agents in the
+  selected format's target directory and records the selected format in the
+  package manifest.
+- Installing `tmux` and installing `pi-subagents` both target
+  `<project>/.pi/agents/`, and each produces frontmatter valid for its
+  orchestrator.
+- Installing `herdr` produces files under
+  `<project>/.pi/herdr-subagents/agents/` whose frontmatter satisfies the herdr
+  persona schema, verified by parsing one converted file with herdr's own
+  parser.
+- Requesting a format that differs from the recorded format refuses the
+  operation without modifying files and reports the uninstall-then-install
+  instruction.
+- Installing with no argument in a non-interactive session, with no detectable
+  orchestrator, fails with a message naming the supported formats.
+- A malformed override file fails the operation and leaves no partially
+  converted agent behind.
 - Re-running install/update refreshes owned agents but preserves foreign
   colliding agents; status is read-only; uninstall removes only owned agents.
 - The root-level references are present in the installed package and the
   relative skill links resolve.
-- No files are created under `~/.pi/agent/agents/` and no workflows are copied
-  into the project.
+- No files are created under `~/.pi/agent/agents/` or
+  `~/.pi/agent/herdr-subagents/`, and no workflows are copied into the project.
 
 ## Implementation Phases and Verification
 
@@ -562,8 +702,10 @@ Acceptance:
 - Each prompt has the source description and preserves source semantics.
 - Argument-taking commands have appropriate Pi argument hints.
 - `planning.toml` remains `/planning`.
-- There are exactly four subagent definitions.
-- All four agents are non-pane and deny `write` and `edit`.
+- There are exactly four canonical subagent definitions.
+- All four canonical agents are non-pane and deny `write` and `edit`.
+- `agents/overrides/` contains exactly the three supported override files and
+  no executable code.
 
 The prompt and agent conversions have disjoint file ownership and may be
 implemented in parallel, followed by one manifest-level discovery check.
@@ -578,10 +720,16 @@ Acceptance:
 - The Pi extensions load through the manifest.
 - Session-start context/meta-skill injection is implemented using Pi's lifecycle
   API.
-- Install/update/status/uninstall manage only this package's four agents under
-  `<project>/.pi/agents/` using `<project>/.pi/pi-agent-skills/manifest.json`.
+- Install/update/status/uninstall manage only this package's four agents using
+  `<project>/.pi/pi-agent-skills/manifest.json`.
+- Install and update accept the optional `format` argument, resolve the format
+  by argument, detection, or interactive prompt, and refuse a format switch in
+  place without modifying files.
+- Converted agents are validated against the selected format before writing; a
+  malformed override fails the operation with rollback.
 - Manifest-owned agents refresh on update; foreign colliding agents are
-  reported and preserved; status is read-only; uninstall is ownership-safe.
+  reported and preserved; status is read-only; uninstall is ownership-safe and
+  format-agnostic.
 - Claude-Code-only hooks remain available for reference.
 - The WebFetch cache hooks and simplify-ignore hooks are explicitly documented
   as non-portable.
@@ -613,14 +761,17 @@ Acceptance:
   after installation.
 - Preserve per-skill supporting files.
 - Preserve the nine command semantics and four agent bodies during conversion.
-- Preserve the four converted agents as package-owned source files and deliver
-  them only through explicit project-local agent commands.
-- Configure converted agents as non-pane and read-only by denying `write` and
-  `edit`.
-- Record ownership, source paths, target paths, package version, and SHA-256
-  hashes for successfully delivered agents.
+- Preserve the four converted agents as package-owned canonical source files
+  and deliver them only through explicit project-local agent commands.
+- Configure the canonical agents as non-pane and read-only by denying `write`
+  and `edit`, and keep every converted format read-only as well.
+- Keep conversion rules declarative in `agents/overrides/`, with the detection
+  table as the only extension code that names an orchestrator package.
+- Record ownership, source paths, target paths, selected format, package
+  version, and SHA-256 hashes of the installed converted content for
+  successfully delivered agents.
 - Never overwrite or delete foreign or non-owned project agents or write to the
-  global agent directory.
+  global agent directories.
 - Document all Claude-Code-only hooks and unsupported behavior.
 - Run build, typecheck, lint, format, and the manual Pi installation smoke
   verification before declaring the package complete.
@@ -636,7 +787,9 @@ Acceptance:
 - Before adding runtime dependencies beyond the development tooling required
   for the extension.
 - Before attempting to map any additional Claude Code hook behavior to Pi.
-- Before changing the agent-delivery target or ownership-manifest path.
+- Before changing the ownership-manifest path or adding, removing, or renaming
+  a supported orchestrator format.
+- Before changing the orchestrator detection table or its package mapping.
 - Before changing distribution from git-only to npm or another registry.
 - Before changing the public repository owner or URL used in acceptance
   verification.
@@ -651,9 +804,16 @@ Acceptance:
   required events or tool names do not exist.
 - Never modify Pi itself or require a Pi fork.
 - Never copy skills into projects; `pi install` already provides package skills.
-- Never write to `~/.pi/agent/agents/` or copy workflows into projects.
+- Never write to `~/.pi/agent/agents/` or `~/.pi/agent/herdr-subagents/`, or
+  copy workflows into projects.
 - Never overwrite or delete foreign or non-owned project agents.
-- Never install or invoke `@vanillagreen/pi-agents-tmux`.
+- Never install, invoke, or declare a dependency on any subagent orchestrator,
+  including `@vanillagreen/pi-agents-tmux`, `@maxiaochao/pi-herdr-subagents`,
+  and `pi-subagents`. Emitting orchestrator-compatible agent files is in scope;
+  installing the orchestrator is the user's responsibility.
+- Never install two orchestrator formats into the same project at the same
+  time.
+- Never grant `write` or `edit` to a canonical read-only agent in any format.
 - Never publish the package to npm as part of this scope.
 - Never commit credentials, tokens, private keys, local machine paths that
   expose secrets, or other sensitive data.
@@ -672,6 +832,7 @@ The following are intentionally outside this repository's implementation:
 - Porting Claude Code's hook event model wholesale.
 - Adding command aliases not present in the upstream command set.
 - Copying skills into projects; skills remain supplied by the installed package.
+- Installing, configuring, or invoking any subagent orchestrator.
 - Installing or managing global agents, foreign project agents, or workflows.
 - Adding an automated test suite.
 
@@ -710,6 +871,13 @@ completed, users may see Pi's normal skill collision warning.
   validate it before mutation and preserve foreign files.
 - Formatting or linting imported content could violate the verbatim-port
   requirement.
+- An override file is data, so a malformed or over-broad patch could produce an
+  agent that fails to load, or that is not read-only; validate before writing
+  and fail closed.
+- Format detection can be ambiguous when multiple orchestrators are installed;
+  detection must not guess.
+- The `tmux` and `pi-subagents` formats share a target directory, so switching
+  between them requires an uninstall step.
 
 ### Compatibility controls
 
@@ -723,6 +891,12 @@ completed, users may see Pi's normal skill collision warning.
   project-local delivery behavior does not require changes to skill content.
 - Validate ownership before every overwrite or deletion and hash installed
   agent content to make update/status decisions deterministic.
+- Validate each converted agent against the selected format before writing, and
+  roll back the whole operation on failure.
+- Treat the orchestrator detection table as the single authoritative mapping and
+  keep it free of conversion logic.
+- Keep the canonical agent sources unchanged so an override file is the only
+  per-orchestrator variable.
 
 ### Backout
 
@@ -756,14 +930,15 @@ The package is complete only when all of the following are true:
    `spec`, `test`, and `webperf`.
 10. The `planning` command is registered as `/planning`, with the choice
     documented rather than silently renamed to `/plan`.
-11. The four package-owned agents are available as source files and are
-    delivered to a project only through the namespaced agent commands.
-12. Installing or updating creates/refreshes only manifest-owned agents under
-    `<project>/.pi/agents/`, records SHA-256 ownership metadata at
-    `<project>/.pi/pi-agent-skills/manifest.json`, and preserves foreign
-    colliding agents.
+11. The four package-owned agents are available as canonical source files and
+    are delivered to a project only through the namespaced agent commands.
+12. Installing or updating creates/refreshes only manifest-owned agents in the
+    selected format's target directory, records the selected format and SHA-256
+    ownership metadata at `<project>/.pi/pi-agent-skills/manifest.json`, and
+    preserves foreign colliding agents.
 13. Status is non-mutating and reports installed, missing, stale, and foreign
-    entries; uninstall removes only owned agents and the owned manifest.
+    entries; uninstall removes only owned agents and the owned manifest and does
+    not require the format to be restated.
 14. The session-start and agent-delivery Pi extensions load successfully and
     perform their supported behavior.
 15. The original hook scripts and documentation are retained and clearly label
@@ -776,6 +951,32 @@ The package is complete only when all of the following are true:
 20. No automated tests are added or required; the testing mode remains exactly
     `Testing: none`.
 21. The README documents git-only installation, resource usage, provenance,
-    non-portable hooks, project-local agent delivery, ownership semantics,
-    coexistence guarantees, and the separate `pi-setup` collision-cleanup
-    follow-up.
+    non-portable hooks, project-local agent delivery, orchestrator format
+    selection, ownership semantics, coexistence guarantees, and the separate
+    `pi-setup` collision-cleanup follow-up.
+22. Each supported format produces agent files whose frontmatter satisfies that
+    orchestrator's schema, and every converted agent remains read-only.
+23. Install and update resolve the format by explicit argument, detection, or
+    interactive prompt, and refuse a format switch in place without modifying
+    files.
+24. Conversion rules live in `agents/overrides/` as data, and the only
+    orchestrator-specific extension code is the detection table.
+
+## Revision History
+
+### Revision 2 - multi-orchestrator agent delivery
+
+- Agent delivery becomes format-aware. One canonical agent source in `agents/`
+  is converted into `tmux`, `herdr`, or `pi-subagents` format at install time
+  using declarative `agents/overrides/<format>.yaml` files.
+- `agent-skills:install` and `agent-skills:update` accept an optional `format`
+  argument and otherwise resolve the format by detection or interactive prompt.
+- The ownership-manifest format version becomes `3` and records the selected
+  format. Version `2` manifests are read as `tmux` and upgraded in place.
+- A format switch in place is refused; uninstall then install is required.
+- The canonical agents remain non-pane and read-only, and every converted
+  format must remain read-only.
+- The package still never installs, invokes, or depends on an orchestrator.
+  The previous prohibition on `@vanillagreen/pi-agents-tmux` is narrowed from
+  "do not target" to "do not install, invoke, or depend on"; emitting
+  tmux-compatible agent files is now in scope.
