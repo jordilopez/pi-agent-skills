@@ -23,6 +23,7 @@
     "references/",
     "prompts/",
     "agents/",
+    "agents/overrides/",
     "extensions/",
     "hooks/",
     "docs/",

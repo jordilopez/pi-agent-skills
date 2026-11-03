@@ -1,0 +1,6 @@
+targetDir: .pi/herdr-subagents/agents
+frontmatter:
+  remove: [pane]
+  set:
+    access: read
+    tools: read, bash, grep, find, ls, codemode
