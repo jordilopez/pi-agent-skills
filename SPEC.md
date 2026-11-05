@@ -278,6 +278,7 @@ The target repository layout is:
       SIMPLIFY-IGNORE.md            Portability and behavior documentation
     docs/
       README and relevant upstream documentation
+      agents.md                     Verbatim import from upstream tag 0.6.9; excluded from Prettier
     <other upstream metadata>       Retained when required for provenance or documentation
 
 The 25 skill names must be exactly:
