@@ -65,9 +65,9 @@ The distribution clarification is:
 - Pi-native resource types:
   - `skills/` for the 25 skills.
   - `prompts/` for converted commands.
-  - `agents/` for the four package-owned canonical agent sources; Pi does not
-    discover these from the package manifest, so the extension delivers them
-    to projects.
+  - `agents/` for the four package-owned canonical agent sources, which Pi does
+    not discover from the package manifest (the extension delivers them to
+    projects), plus `body-rewrites.yaml`, the delivery-time path-anchor table.
   - `agents/overrides/` for declarative per-orchestrator frontmatter patches
     and target directories. These are data files, not executable code.
   - `extensions/` for session-start and project-local agent-delivery behavior.
@@ -216,8 +216,8 @@ selected during implementation, but the following requirements are mandatory:
 - The package does not depend on npm publication. Git installation is the
   supported distribution mechanism.
 - The `agents/` directory is included in the package files so that the
-  canonical agent sources and `agents/overrides/` are available after
-  installation.
+  canonical agent sources, `agents/overrides/`, and
+  `agents/body-rewrites.yaml` are available after installation.
 - The package does not use a post-install step that modifies Pi or rewrites
   imported skill content.
 
@@ -259,6 +259,7 @@ The target repository layout is:
       security-auditor.md
       test-engineer.md
       web-performance-auditor.md
+      body-rewrites.yaml
       overrides/
         tmux.yaml
         herdr.yaml
@@ -400,9 +401,11 @@ are the canonical source and use tmux-format frontmatter: `pane: false` and
 - Not gain permission to modify repository files as part of the conversion.
 
 Delivery converts the canonical source into the format required by the user's
-chosen orchestrator. Conversion is declared by data, not by code. Each
-supported orchestrator has one override file under `agents/overrides/` that
-declares a target directory and a frontmatter patch:
+chosen orchestrator. Conversion is declared by data, not by code. Two data
+files drive it: each supported orchestrator has one override file under
+`agents/overrides/` that declares a target directory and a frontmatter patch,
+and the shared `agents/body-rewrites.yaml` declares the body path-anchor
+rewrites applied to every format:
 
 | Format | Target directory | Frontmatter patch |
 | --- | --- | --- |
@@ -419,8 +422,23 @@ An override file is a small declarative document, for example:
         access: read
         tools: read, bash, grep, find, ls, codemode
 
-The agent body below the frontmatter is preserved verbatim for every format.
-Only frontmatter is added, removed, or replaced.
+The body-anchor table is likewise a small declarative document, shared by
+every format:
+
+    rewrites:
+      - from: "references/"
+        to: "${packageRoot}/references/"
+
+The agent body below the frontmatter is preserved byte-for-byte for every
+format, with one declared exception: `agents/body-rewrites.yaml` anchors
+package-root-relative prefixes (`references/`, `skills/`, `prompts/`,
+`../docs/`) to the absolute package root, because delivery copies bodies into
+`<project>/.pi/...` where a package-root-relative path would resolve against
+the project root. The rewrite applies to the in-memory body only, never to
+canonical sources, and is limited to the prefixes the table declares;
+matching is substring-based, so a declared prefix is rewritten wherever it
+occurs in the body, not only in link targets. Only frontmatter is otherwise
+added, removed, or replaced.
 
 Every converted agent must remain read-only in every supported format. A
 conversion that would grant `write` or `edit` to a read-only agent is a defect,
@@ -522,8 +540,9 @@ and continues to require uninstall followed by install.
 Install and update must create missing package-owned agents, refresh agents
 listed in the manifest even when locally modified, skip and report foreign
 colliding files, update ownership only after successful operations, and be
-idempotent. Conversion must be deterministic: the same canonical source and
-override file must always produce byte-identical output.
+idempotent. Conversion must be deterministic: the same canonical source,
+override file, and body-anchor table must always produce byte-identical
+output.
 
 Install and update must validate each converted agent against the selected
 format before writing it, and must fail the operation, with rollback, when a
@@ -583,8 +602,9 @@ Conventions:
   punctuation could be ambiguous.
 - Keep the orchestrator detection table as the only extension code that names a
   specific orchestrator package.
-- Keep conversion rules in `agents/overrides/<format>.yaml` data files; do not
-  add per-orchestrator conversion functions.
+- Keep conversion rules in data files — `agents/overrides/<format>.yaml` for
+  per-orchestrator frontmatter and `agents/body-rewrites.yaml` for body path
+  anchors; do not add per-orchestrator conversion functions.
 - Validate override files and converted agent output before any filesystem
   mutation, and report a specific reason when validation fails.
 
@@ -761,13 +781,16 @@ Acceptance:
 - Include `references/` in the git repository and package files so links work
   after installation.
 - Preserve per-skill supporting files.
-- Preserve the nine command semantics and four agent bodies during conversion.
+- Preserve the nine command semantics and the four agent bodies during
+  conversion, subject only to the declared body-anchor rewrite.
 - Preserve the four converted agents as package-owned canonical source files
   and deliver them only through explicit project-local agent commands.
 - Configure the canonical agents as non-pane and read-only by denying `write`
   and `edit`, and keep every converted format read-only as well.
-- Keep conversion rules declarative in `agents/overrides/`, with the detection
-  table as the only extension code that names an orchestrator package.
+- Keep conversion rules declarative in data files — `agents/overrides/` for
+  per-orchestrator frontmatter and `agents/body-rewrites.yaml` for body path
+  anchors — with the detection table as the only extension code that names an
+  orchestrator package.
 - Record ownership, source paths, target paths, selected format, package
   version, and SHA-256 hashes of the installed converted content for
   successfully delivered agents.
@@ -827,7 +850,11 @@ The following are intentionally outside this repository's implementation:
 
 - Publishing to npm.
 - Modifying Pi.
-- Adding new skills or changing any upstream skill content.
+- Adding new skills or changing any upstream skill content. Anchoring
+  delivered-copy paths is not covered by this exclusion: rewriting
+  package-root-relative prefixes in the in-memory body at delivery time
+  (`agents/body-rewrites.yaml`) changes neither canonical agent sources nor
+  any upstream skill or reference content.
 - Implementing the Claude Code `WebFetch` cache hooks in Pi.
 - Implementing the Claude Code simplify-ignore hooks in Pi.
 - Porting Claude Code's hook event model wholesale.
@@ -960,8 +987,9 @@ The package is complete only when all of the following are true:
 23. Install and update resolve the format by explicit argument, detection, or
     interactive prompt, and refuse a format switch in place without modifying
     files.
-24. Conversion rules live in `agents/overrides/` as data, and the only
-    orchestrator-specific extension code is the detection table.
+24. Conversion rules live in data files (`agents/overrides/` and
+    `agents/body-rewrites.yaml`), and the only orchestrator-specific extension
+    code is the detection table.
 
 ## Revision History
 
