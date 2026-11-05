@@ -237,8 +237,9 @@ export type BodyRewrite = {
   to: string;
 };
 
-/** The only placeholder a rewrite target may contain. */
-const PACKAGE_ROOT_PLACEHOLDER = "${packageRoot}";
+/** The only placeholder a rewrite target may contain. Exported so the
+ * delivery loader expands exactly what the parser validated. */
+export const PACKAGE_ROOT_PLACEHOLDER = "${packageRoot}";
 
 /**
  * Parse `agents/body-rewrites.yaml`, the delivery-time body path-anchoring

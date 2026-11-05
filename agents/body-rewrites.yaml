@@ -11,6 +11,10 @@
 # original body, never sequentially. An expanded target embeds the package
 # root (e.g. .../pi-agent-skills/...), so a later `from` such as `skills/`
 # would match inside an already-anchored path and corrupt it.
+#
+# Matching is substring-based, so keep prefixes disjoint: overlapping `from`
+# values resolve by table order (leftmost match wins) and a prefix that also
+# occurs inside unrelated text (e.g. a URL segment) would be rewritten too.
 rewrites:
   - from: "references/"
     to: "${packageRoot}/references/"
