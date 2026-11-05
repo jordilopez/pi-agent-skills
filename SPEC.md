@@ -674,6 +674,12 @@ The manual smoke check must confirm:
   colliding agents; status is read-only; uninstall removes only owned agents.
 - The root-level references are present in the installed package and the
   relative skill links resolve.
+- In every supported format, a delivered agent body contains no unresolved
+  package-relative path: one reference per category (`references/`,
+  `skills/`, `docs/`) reads back successfully through the delivered copy's
+  absolute path, no unexpanded `${packageRoot}` placeholder remains, and no
+  absolute package path appears in a delivered body where the canonical
+  source has none.
 - No files are created under `~/.pi/agent/agents/` or
   `~/.pi/agent/herdr-subagents/`, and no workflows are copied into the project.
 

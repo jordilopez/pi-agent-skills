@@ -114,6 +114,8 @@ In a Pi session **within the target project**, type any of these slash commands:
 
 The `agents/` directory holds the four canonical definitions. `agents/overrides/<format>.yaml` holds the declarative frontmatter patch for each format. Adding an orchestrator adds one override file and one entry in the detection table — no new conversion code.
 
+Delivery also path-anchors each body: package-root-relative references (`references/`, `skills/`, `prompts/`, `../docs/`) are rewritten to absolute paths under the installed package root, because a copy under `<project>/.pi/...` would otherwise resolve them against the project root. A delivered agent file therefore carries this machine's package path. If you commit your project's `.pi/`, you commit that machine-specific path with it — commit `.pi/` only if you accept that. The files regenerate with the installing machine's path on the next `agent-skills:update`, and the canonical `agents/*.md` sources stay package-root-relative and byte-identical.
+
 Every converted agent is read-only in every format. A conversion that would grant `write` or `edit` is rejected as a defect before anything is written.
 
 ### Format selection
@@ -170,9 +172,9 @@ This package is designed to coexist with a project's existing Pi setup:
 
 The upstream source is [`addyosmani/agent-skills`](https://github.com/addyosmani/agent-skills), version `0.6.9`, as recorded by `plugin.json`.
 
-- Skills, shared references, hooks, and their supporting files are verbatim imports from upstream.
+- Skills, shared references, hooks, `docs/agents.md`, and their supporting files are verbatim imports from upstream.
 - Prompt templates are converted from the nine upstream TOML command files.
-- Agent definitions are converted from the four upstream agent definitions, with Pi-specific read-only frontmatter. `agents/overrides/` supplies the declarative per-format frontmatter patches used by agent delivery.
+- Agent definitions are converted from the four upstream agent definitions, with Pi-specific read-only frontmatter. `agents/overrides/` supplies the declarative per-format frontmatter patches used by agent delivery, and `agents/body-rewrites.yaml` supplies the delivery-time path anchors. Delivered copies are path-anchored at install time and therefore carry an absolute package path; canonical `agents/*.md` remain package-root-relative and byte-identical.
 - The unchanged skill links such as `../../references/definition-of-done.md` resolve from each skill directory to the sibling package-root `references/` directory.
 - `LICENSE` and `plugin.json` retain the upstream provenance metadata required by the port.
 
