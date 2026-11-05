@@ -1,13 +1,20 @@
 /**
- * Minimal YAML subset parser for `agents/overrides/<format>.yaml` data files.
+ * Minimal YAML subset parser for this package's two data files:
+ * `agents/overrides/<format>.yaml` and `agents/body-rewrites.yaml`.
  *
- * Scope is intentionally narrow: it parses only the override schema —
+ * Scope is intentionally narrow: it parses only these two schemas —
  *
  *     targetDir: <relative-path>
  *     frontmatter:
  *       remove: [key, ...]
  *       set:
  *         key: <safe-scalar>
+ *
+ * and
+ *
+ *     rewrites:
+ *       - from: <literal-prefix>
+ *         to: <target-with-${packageRoot}>
  *
  * It supports plain, single-quoted, and double-quoted scalar values and flow
  * sequences for `remove`. Anchors, aliases, block scalars, multi-document
@@ -223,4 +230,132 @@ export const parseOverrideYaml = (text: string): OverrideFile => {
       set,
     },
   };
+};
+
+export type BodyRewrite = {
+  from: string;
+  to: string;
+};
+
+/** The only placeholder a rewrite target may contain. Exported so the
+ * delivery loader expands exactly what the parser validated. */
+export const PACKAGE_ROOT_PLACEHOLDER = "${packageRoot}";
+
+/**
+ * Parse `agents/body-rewrites.yaml`, the delivery-time body path-anchoring
+ * table. Same fail-closed rules as the override parser: unknown keys, wrong
+ * indentation, a missing `to`, duplicate `from` prefixes, and any
+ * placeholder other than `${packageRoot}` in `to` throw with the offending
+ * line number, so a malformed table can never reach conversion.
+ */
+export const parseBodyRewritesYaml = (text: string): BodyRewrite[] => {
+  const lines = text.split(/\r?\n/);
+  const rewrites: BodyRewrite[] = [];
+  let sawRewrites = false;
+  let pending: { from: string } | undefined;
+
+  for (let i = 0; i < lines.length; i += 1) {
+    const raw = lines[i];
+
+    if (isBlankOrComment(raw)) continue;
+
+    const lineNo = i + 1;
+    const indent = raw.length - raw.trimStart().length;
+    const content = raw.trim();
+
+    if (indent === 0) {
+      if (content !== "rewrites:") {
+        throw new Error(`yaml-mini: unexpected top-level key on line ${lineNo}.`);
+      }
+      if (sawRewrites) {
+        throw new Error(`yaml-mini: duplicate "rewrites" key on line ${lineNo}.`);
+      }
+      sawRewrites = true;
+      continue;
+    }
+
+    if (indent === 2 && content.startsWith("- from:")) {
+      if (!sawRewrites) {
+        throw new Error(`yaml-mini: rewrite entry before the "rewrites" key on line ${lineNo}.`);
+      }
+      if (pending !== undefined) {
+        throw new Error(
+          `yaml-mini: rewrite entry "${pending.from}" is missing "to" before line ${lineNo}.`,
+        );
+      }
+      const from = parseNonEmptyString(content.slice("- from:".length), lineNo, 'rewrite "from"');
+
+      if (from.includes("${")) {
+        throw new Error(
+          `yaml-mini: "from" must be a literal prefix without placeholders on line ${lineNo}.`,
+        );
+      }
+
+      if (rewrites.some((rewrite) => rewrite.from === from)) {
+        throw new Error(`yaml-mini: duplicate rewrite prefix "${from}" on line ${lineNo}.`);
+      }
+
+      pending = { from };
+      continue;
+    }
+
+    if (indent === 4) {
+      if (pending === undefined) {
+        throw new Error(`yaml-mini: rewrite key without a preceding "- from" on line ${lineNo}.`);
+      }
+      const keyValue = splitKeyValue(content);
+
+      if (!keyValue || keyValue.key !== "to") {
+        throw new Error(
+          `yaml-mini: expected "to: <target>" for rewrite "${pending.from}" on line ${lineNo}.`,
+        );
+      }
+
+      const to = parseNonEmptyString(keyValue.value, lineNo, 'rewrite "to"');
+      const withoutAllowed = to.split(PACKAGE_ROOT_PLACEHOLDER).join("");
+
+      if (withoutAllowed.includes("${")) {
+        throw new Error(
+          `yaml-mini: unsupported placeholder in "to" on line ${lineNo}; only \${packageRoot} is allowed.`,
+        );
+      }
+
+      if (!to.startsWith(`${PACKAGE_ROOT_PLACEHOLDER}/`)) {
+        throw new Error(`yaml-mini: "to" must start with "\${packageRoot}/" on line ${lineNo}.`);
+      }
+
+      if (
+        to
+          .slice(PACKAGE_ROOT_PLACEHOLDER.length + 1)
+          .split("/")
+          .includes("..")
+      ) {
+        throw new Error(`yaml-mini: "to" must not escape the package root on line ${lineNo}.`);
+      }
+
+      rewrites.push({ from: pending.from, to });
+      pending = undefined;
+      continue;
+    }
+
+    if (indent === 2) {
+      throw new Error(`yaml-mini: expected "- from: <prefix>" on line ${lineNo}.`);
+    }
+
+    throw new Error(`yaml-mini: unexpected indentation on line ${lineNo}.`);
+  }
+
+  if (!sawRewrites) {
+    throw new Error('yaml-mini: missing required "rewrites" key.');
+  }
+
+  if (pending !== undefined) {
+    throw new Error(`yaml-mini: rewrite entry "${pending.from}" is missing "to".`);
+  }
+
+  if (rewrites.length === 0) {
+    throw new Error('yaml-mini: "rewrites" declares no entries.');
+  }
+
+  return rewrites;
 };

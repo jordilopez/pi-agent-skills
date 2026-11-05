@@ -26,7 +26,13 @@ import {
   isAgentFormat,
   type AgentFormat,
 } from "./orchestrator-detection.js";
-import { parseOverrideYaml, type OverrideFile } from "./yaml-mini.js";
+import {
+  PACKAGE_ROOT_PLACEHOLDER,
+  parseBodyRewritesYaml,
+  parseOverrideYaml,
+  type BodyRewrite,
+  type OverrideFile,
+} from "./yaml-mini.js";
 
 type OwnedAgent = {
   /** Package-relative path, e.g. "agents/code-reviewer.md". */
@@ -74,6 +80,7 @@ const MANIFEST_FILE = "manifest.json";
 const PI_DIR = ".pi";
 const SOURCE_AGENTS_DIR = "agents";
 const OVERRIDES_DIR = "agents/overrides";
+const BODY_REWRITES_FILE = "agents/body-rewrites.yaml";
 const AGENT_NAMES = [
   "code-reviewer.md",
   "security-auditor.md",
@@ -82,6 +89,12 @@ const AGENT_NAMES = [
 ] as const;
 
 const HEX64_RE = /^[0-9a-f]{64}$/;
+
+// Shared by resolvePackageRoot (its only failure mode) and installOrUpdate's
+// packageRoot precondition, so an unavailable root always reports the same
+// message instead of failing later with a path-specific one.
+const CANNOT_RESOLVE_PACKAGE_ROOT =
+  "Cannot resolve package root. No verified installation of agent-skills-pi was found.";
 
 const readJson = async (filePath: string): Promise<unknown> => {
   const content = await readFile(filePath, "utf-8");
@@ -94,19 +107,56 @@ const isHex64 = (value: unknown): value is string =>
 const isAgentName = (value: unknown): value is (typeof AGENT_NAMES)[number] =>
   typeof value === "string" && (AGENT_NAMES as readonly string[]).includes(value);
 
-/**
- * Apply an override's frontmatter patch to a canonical agent source. The body
- * is preserved verbatim; only frontmatter keys are removed or set. An empty
- * patch returns the source unchanged (tmux pass-through).
- */
-const convertAgent = (canonicalSource: string, override: OverrideFile): string => {
-  const { remove, set } = override.frontmatter;
+/** Escape a literal string so it can be used as one RegExp alternative. */
+const escapeRegExp = (value: string): string => value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
-  if (remove.length === 0 && Object.keys(set).length === 0) {
-    return canonicalSource;
+/**
+ * Anchor package-root-relative prefixes in one pass over the original body.
+ * Sequential per-rule replacement is unsafe: an expanded target embeds the
+ * package root (…pi-agent-skills/…), so a later `from` such as `skills/`
+ * would match inside an already-anchored path and corrupt it. `String.replace`
+ * scans the source string only, so matches inside replacement output are
+ * never re-matched.
+ */
+const applyBodyRewrites = (body: string, rewrites: readonly BodyRewrite[]): string => {
+  if (rewrites.length === 0) {
+    return body;
   }
 
+  const targets = new Map(rewrites.map((rewrite) => [rewrite.from, rewrite.to]));
+  const pattern = new RegExp(rewrites.map((rewrite) => escapeRegExp(rewrite.from)).join("|"), "g");
+
+  return body.replace(pattern, (match) => targets.get(match) ?? match);
+};
+
+/**
+ * Apply an override's frontmatter patch and the body path-anchoring rewrites
+ * to a canonical agent source. Only frontmatter keys are removed or set; the
+ * body keeps its bytes except that package-root-relative prefixes are
+ * anchored to the install path. An empty patch with no matching prefix
+ * returns the source unchanged (tmux pass-through).
+ */
+const convertAgent = (
+  canonicalSource: string,
+  override: OverrideFile,
+  rewrites: readonly BodyRewrite[],
+): string => {
+  const { remove, set } = override.frontmatter;
   const parsed = parseAgentFile(canonicalSource);
+  const body = applyBodyRewrites(parsed.body, rewrites);
+
+  if (remove.length === 0 && Object.keys(set).length === 0) {
+    if (body === parsed.body) {
+      return canonicalSource;
+    }
+
+    // `body` is the exact byte suffix after the closing `---` delimiter
+    // line, so the frontmatter block can be spliced around the rewritten
+    // body without re-rendering (and potentially reformatting) it.
+    const frontmatterEnd = canonicalSource.length - parsed.body.length;
+    return canonicalSource.slice(0, frontmatterEnd) + body;
+  }
+
   const removed = new Set(remove);
   const entries = parsed.frontmatter.filter((entry) => !removed.has(entry.key));
 
@@ -120,7 +170,7 @@ const convertAgent = (canonicalSource: string, override: OverrideFile): string =
     }
   }
 
-  return renderAgentFile(entries, parsed.body);
+  return renderAgentFile(entries, body);
 };
 
 /** Load and validate an override file for a supported format. */
@@ -154,6 +204,47 @@ const loadOverride = (format: AgentFormat, packageRoot: string): OverrideFile =>
   return { ...parsed, targetDir: posixNormalize(parsed.targetDir) };
 };
 
+/**
+ * Load, validate, and package-root-resolve the delivery-time body
+ * path-anchoring table. A missing or malformed table, or a target that still
+ * carries a placeholder after expansion, fails the install before any
+ * conversion or project write, matching the override loader's fail-closed
+ * behavior.
+ */
+const loadBodyRewrites = (packageRoot: string): BodyRewrite[] => {
+  const tablePath = resolvePackagePath(packageRoot, BODY_REWRITES_FILE);
+
+  let text: string;
+
+  try {
+    text = readFileSync(tablePath, "utf-8");
+  } catch {
+    throw new Error(`agent-skills: missing body rewrite table: ${tablePath}`);
+  }
+
+  let parsed: BodyRewrite[];
+
+  try {
+    parsed = parseBodyRewritesYaml(text);
+  } catch (error) {
+    throw new Error(
+      `agent-skills: malformed body rewrite table: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
+
+  return parsed.map((rewrite) => {
+    const to = rewrite.to.replaceAll(PACKAGE_ROOT_PLACEHOLDER, packageRoot);
+
+    if (to.includes("${")) {
+      throw new Error(
+        `agent-skills: unexpanded placeholder in rewrite target for "${rewrite.from}": ${to}`,
+      );
+    }
+
+    return { ...rewrite, to };
+  });
+};
+
 const resolvePackageRoot = (): string => {
   const compiledPackageCandidate = fileURLToPath(new URL("..", import.meta.url));
   const candidatePackageJson = join(compiledPackageCandidate, "package.json");
@@ -183,9 +274,7 @@ const resolvePackageRoot = (): string => {
     // Ignore unreadable candidates.
   }
 
-  throw new Error(
-    "Cannot resolve package root. No verified installation of agent-skills-pi was found.",
-  );
+  throw new Error(CANNOT_RESOLVE_PACKAGE_ROOT);
 };
 
 const readPackageVersion = (packageRoot: string): string => {
@@ -528,8 +617,15 @@ const installOrUpdate = async (
   notify: Notify,
   format: AgentFormat,
 ): Promise<void> => {
+  if (!packageRoot) {
+    // Fail through the same path as resolvePackageRoot() rather than letting
+    // a later read or an unexpanded rewrite placeholder fail obscurely.
+    throw new Error(CANNOT_RESOLVE_PACKAGE_ROOT);
+  }
+
   const packageVersion = readPackageVersion(packageRoot);
   const override = loadOverride(format, packageRoot);
+  const bodyRewrites = loadBodyRewrites(packageRoot);
   const sourceDir = join(packageRoot, SOURCE_AGENTS_DIR);
 
   try {
@@ -613,7 +709,7 @@ const installOrUpdate = async (
       throw new Error(`agent-skills: missing canonical source for "${agentName}".`);
     }
 
-    const convertedText = convertAgent(canonical, override);
+    const convertedText = convertAgent(canonical, override, bodyRewrites);
     const validation = validateConvertedAgent(format, convertedText);
 
     if (!validation.ok) {
@@ -1068,6 +1164,7 @@ export {
   checkCanonicalReadOnly,
   convertAgent,
   installOrUpdate,
+  loadBodyRewrites,
   loadOverride,
   resolveFormat,
   resolvePackageRoot,
