@@ -1,0 +1,22 @@
+# Delivery-time path anchoring for delivered agent copies.
+#
+# Canonical agents/*.md bodies use package-root-relative references
+# (references/, skills/, prompts/, ../docs/). Delivery copies bodies
+# verbatim into <project>/.pi/..., where those prefixes would resolve
+# against the project root instead of this package. Conversion expands
+# ${packageRoot} to the resolved install path and rewrites each prefix
+# in the in-memory body only; canonical sources are never modified.
+#
+# Application hazard: rules must be applied in a single pass over the
+# original body, never sequentially. An expanded target embeds the package
+# root (e.g. .../pi-agent-skills/...), so a later `from` such as `skills/`
+# would match inside an already-anchored path and corrupt it.
+rewrites:
+  - from: "references/"
+    to: "${packageRoot}/references/"
+  - from: "skills/"
+    to: "${packageRoot}/skills/"
+  - from: "prompts/"
+    to: "${packageRoot}/prompts/"
+  - from: "../docs/"
+    to: "${packageRoot}/docs/"

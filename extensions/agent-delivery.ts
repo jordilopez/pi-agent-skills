@@ -26,7 +26,12 @@ import {
   isAgentFormat,
   type AgentFormat,
 } from "./orchestrator-detection.js";
-import { parseOverrideYaml, type OverrideFile } from "./yaml-mini.js";
+import {
+  parseBodyRewritesYaml,
+  parseOverrideYaml,
+  type BodyRewrite,
+  type OverrideFile,
+} from "./yaml-mini.js";
 
 type OwnedAgent = {
   /** Package-relative path, e.g. "agents/code-reviewer.md". */
@@ -74,6 +79,7 @@ const MANIFEST_FILE = "manifest.json";
 const PI_DIR = ".pi";
 const SOURCE_AGENTS_DIR = "agents";
 const OVERRIDES_DIR = "agents/overrides";
+const BODY_REWRITES_FILE = "agents/body-rewrites.yaml";
 const AGENT_NAMES = [
   "code-reviewer.md",
   "security-auditor.md",
@@ -152,6 +158,31 @@ const loadOverride = (format: AgentFormat, packageRoot: string): OverrideFile =>
   }
 
   return { ...parsed, targetDir: posixNormalize(parsed.targetDir) };
+};
+
+/**
+ * Load and validate the delivery-time body path-anchoring table. A missing or
+ * malformed table fails the install before any conversion runs, matching the
+ * override loader's fail-closed behavior.
+ */
+const loadBodyRewrites = (packageRoot: string): BodyRewrite[] => {
+  const tablePath = resolvePackagePath(packageRoot, BODY_REWRITES_FILE);
+
+  let text: string;
+
+  try {
+    text = readFileSync(tablePath, "utf-8");
+  } catch {
+    throw new Error(`agent-skills: missing body rewrite table: ${tablePath}`);
+  }
+
+  try {
+    return parseBodyRewritesYaml(text);
+  } catch (error) {
+    throw new Error(
+      `agent-skills: malformed body rewrite table: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
 };
 
 const resolvePackageRoot = (): string => {
@@ -1068,6 +1099,7 @@ export {
   checkCanonicalReadOnly,
   convertAgent,
   installOrUpdate,
+  loadBodyRewrites,
   loadOverride,
   resolveFormat,
   resolvePackageRoot,
