@@ -27,12 +27,15 @@
     "agents/overrides/",
     "extensions/",
     "hooks/",
+    "scripts/",
+    "UPSTREAM.json",
     "docs/",
     "README.md",
     "LICENSE",
     "plugin.json"
   ],
   "scripts": {
+    "test": "node --test tests/*.test.mjs",
     "build": "tsc -p tsconfig.build.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "lint": "eslint \"extensions/**/*.ts\"",
