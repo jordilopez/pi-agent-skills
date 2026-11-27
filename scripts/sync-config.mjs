@@ -1,12 +1,14 @@
 const SLUG = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 const SHA = /^[a-f0-9]{40}$/;
 
+// These paths belong to the Pi port and must never be replaced by upstream content.
 export const PROTECTED_PATHS = Object.freeze([
   'package.json', 'package-lock.json', 'README.md', 'extensions/',
   'agents/overrides/', 'agents/body-rewrites.yaml', 'scripts/', '.github/',
   'dist/', 'types/', 'tsconfig.json', 'tsconfig.build.json', 'LICENSE',
 ]);
 
+// Allow only the one upstream-owned file under docs/; the rest of the docs are package-authored.
 export function isProtectedPath(relativePath) {
   if (relativePath.startsWith('docs/') && relativePath !== 'docs/agents.md') return true;
   return PROTECTED_PATHS.some((protectedPath) =>
@@ -14,6 +16,7 @@ export function isProtectedPath(relativePath) {
   );
 }
 
+/** Validates the repository pin and the explicitly selected upstream resources. */
 export function validateUpstreamConfig(config) {
   const errors = [];
   if (!config || typeof config !== 'object' || Array.isArray(config)) return { errors: ['config must be an object'] };

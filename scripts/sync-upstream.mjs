@@ -6,6 +6,9 @@ import { fileURLToPath } from 'node:url';
 import { isProtectedPath, validateUpstreamConfig } from './sync-config.mjs';
 
 const SHA = /^[a-f0-9]{40}$/;
+
+// Validate every existing path component before reading or mutating it. This prevents
+// an upstream or package checkout symlink from redirecting a sync outside its root.
 const assertSafePath = async (root, target, { allowMissingLeaf = false } = {}) => {
   const rootInfo = await lstat(root);
   if (rootInfo.isSymbolicLink()) throw new Error(`symbolic links are not supported: ${root}`);
@@ -28,6 +31,7 @@ const assertSafePath = async (root, target, { allowMissingLeaf = false } = {}) =
   }
 };
 
+// Enumerate regular files only; symlinks and special filesystem entries are rejected.
 const files = async (root, prefix = '') => {
   await assertSafePath(root, root);
   const entries = await readdir(root, { withFileTypes: true });
@@ -44,6 +48,7 @@ const files = async (root, prefix = '') => {
   return result;
 };
 
+// Missing destinations are allowed during planning, but existing entries must be regular files.
 async function assertRegularFile(filePath, label) {
   try {
     const info = await lstat(filePath);
@@ -53,6 +58,7 @@ async function assertRegularFile(filePath, label) {
   }
 }
 
+// Keep the import boundary explicit: Pi-owned package files are never inferred from upstream.
 const sourceMappings = (config) => [
   ...config.skills.map((name) => ({ source: `skills/${name}`, destination: `skills/${name}` })),
   { source: 'references', destination: 'references' },
@@ -61,6 +67,7 @@ const sourceMappings = (config) => [
   ...config.agents.map((name) => ({ source: `agents/${name}.md`, destination: `agents/${name}.md`, file: true, bodyOnly: true })),
 ];
 
+/** Computes additions, updates, removals, and agent-body replacements without mutating the package. */
 export async function createSyncPlan({ config, upstreamRoot, packageRoot }) {
   const validation = validateUpstreamConfig(config);
   if (validation.errors.length) throw new Error(validation.errors.join('; '));
@@ -102,6 +109,7 @@ export async function createSyncPlan({ config, upstreamRoot, packageRoot }) {
   return { operations };
 }
 
+// Agent frontmatter contains Pi-specific delivery metadata, so only the upstream body is refreshed.
 function preserveFrontmatter(current, upstream) {
   const text = current.toString();
   const next = upstream.toString();
@@ -110,6 +118,7 @@ function preserveFrontmatter(current, upstream) {
   return localEnd >= 0 && upstreamEnd >= 0 ? Buffer.from(`${text.slice(0, localEnd + 5)}${next.slice(upstreamEnd + 5)}`) : upstream;
 }
 
+/** Applies a sync plan through staged files and temporary backups so failures can be rolled back. */
 export async function applySyncPlan({ plan, config, packageRoot, targetCommit }) {
   if (!SHA.test(targetCommit ?? '')) throw new Error('targetCommit must be a 40-character lowercase hexadecimal hash');
   const manifest = path.join(packageRoot, 'UPSTREAM.json');
@@ -132,6 +141,7 @@ export async function applySyncPlan({ plan, config, packageRoot, targetCommit })
       if (operation.content !== null) await rename(staged, operation.destination);
       applied.push(operation);
     }
+    // Replace provenance last, after all imported files have been staged successfully.
     const stagedManifest = path.join(temp, 'UPSTREAM.json');
     await writeFile(stagedManifest, `${JSON.stringify({ ...config, commit: targetCommit }, null, 2)}\n`);
     if (await readFile(manifest).then(() => true).catch(() => false)) {
