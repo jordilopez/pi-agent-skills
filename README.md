@@ -170,13 +170,14 @@ This package is designed to coexist with a project's existing Pi setup:
 
 ## Provenance
 
-The upstream source is [`addyosmani/agent-skills`](https://github.com/addyosmani/agent-skills), version `0.6.9`, as recorded by `plugin.json`.
+The upstream source is [`addyosmani/agent-skills`](https://github.com/addyosmani/agent-skills), pinned by commit in [`UPSTREAM.json`](UPSTREAM.json).
 
 - Skills, shared references, hooks, `docs/agents.md`, and their supporting files are verbatim imports from upstream.
 - Prompt templates are converted from the nine upstream TOML command files.
 - Agent definitions are converted from the four upstream agent definitions, with Pi-specific read-only frontmatter. `agents/overrides/` supplies the declarative per-format frontmatter patches used by agent delivery, and `agents/body-rewrites.yaml` supplies the delivery-time path anchors. Delivered copies are path-anchored at install time and therefore carry an absolute package path; canonical `agents/*.md` remain package-root-relative and byte-identical.
 - The unchanged skill links such as `../../references/definition-of-done.md` resolve from each skill directory to the sibling package-root `references/` directory.
 - `LICENSE` and `plugin.json` retain the upstream provenance metadata required by the port.
+- Upstream imports are refreshed by the scheduled/manual `.github/workflows/sync-upstream.yml` workflow, which opens a reviewable PR after validation. See [the synchronization guide](docs/upstream-sync.md) for local operation and workflow details.
 
 ## Claude Code hooks and portability
 
@@ -204,6 +205,6 @@ npm run lint
 npm run format:check
 ```
 
-Testing mode for this port is `none`: no automated test suite is authored or required. Verification uses the build, typecheck, lint, formatting, and manual Pi installation checks appropriate to each implementation task.
+Verification uses the build, typecheck, lint, formatting, and manual Pi installation checks appropriate to each implementation task. Upstream synchronization runs automatically through the scheduled workflow; locally, invoke `node scripts/sync-upstream.mjs --upstream-root PATH --commit SHA --apply`.
 
 The supported distribution model is Git-only. This project does not publish to npm and has no npm publication workflow.
