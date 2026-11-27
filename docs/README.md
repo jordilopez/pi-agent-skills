@@ -77,4 +77,6 @@ Removing those overlapping skills from `pi-setup` is a separate approved follow-
 
 - [Root README](../README.md) — full installation, provenance, coexistence guarantees, and development reference
 - [Plugin metadata](../plugin.json) — upstream version and provenance
-- [Upstream source](https://github.com/addyosmani/agent-skills) — original agent-skills repository (v0.6.9)
+- [Upstream source](https://github.com/addyosmani/agent-skills) — original agent-skills repository, pinned in [`UPSTREAM.json`](../UPSTREAM.json)
+- [`sync-upstream.yml`](../.github/workflows/sync-upstream.yml) — scheduled/manual upstream synchronization workflow
+- [`upstream-sync.md`](upstream-sync.md) — synchronization design, local operation, and validation
